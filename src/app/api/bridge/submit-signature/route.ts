@@ -1,12 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchStargateApiJson } from "@/lib/layerzero";
+import {
+  fetchLayerZeroJson,
+  fetchStargateApiJson,
+  fetchStargateV2ApiJson,
+} from "@/lib/layerzero";
+import type { BridgeApiProvider } from "@/lib/bridge-types";
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { response, data } = await fetchStargateApiJson("/submit-signature", {
+    const apiKey = request.headers.get("x-bridge-api-key");
+    const provider = (body.provider === "layerzero"
+      ? "layerzero"
+      : body.provider === "stargate-v2"
+        ? "stargate-v2"
+        : "stargate") as BridgeApiProvider;
+    const payload = { ...body };
+    delete payload.provider;
+    const fetchSubmitJson =
+      provider === "layerzero"
+        ? (path: string, init?: RequestInit) =>
+            fetchLayerZeroJson(path, init, { includeApiKey: true, apiKey })
+        : provider === "stargate-v2"
+          ? fetchStargateV2ApiJson
+          : fetchStargateApiJson;
+
+    const { response, data } = await fetchSubmitJson("/submit-signature", {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {

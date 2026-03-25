@@ -1,8 +1,21 @@
+export type BridgeChainType =
+  | "EVM"
+  | "SOLANA"
+  | "APTOS"
+  | "TRON"
+  | "STARKNET"
+  | "TON"
+  | "SUI"
+  | "IOTAMOVE"
+  | string;
+
+export type BridgeApiProvider = "stargate" | "stargate-v2" | "layerzero";
+
 export interface BridgeChain {
   name: string;
   shortName: string;
   chainKey: string;
-  chainType: string;
+  chainType: BridgeChainType;
   chainId: number;
   nativeCurrency: BridgeToken;
 }
@@ -42,10 +55,12 @@ export interface QuoteDuration {
 }
 
 export interface TransactionPayload {
-  to: string;
+  to?: string;
   data?: `0x${string}`;
   value?: string;
   gasLimit?: string;
+  serializedTransaction?: string;
+  [key: string]: unknown;
 }
 
 export interface TransactionUserStep {
@@ -110,6 +125,10 @@ export interface BridgeQuoteResponse {
     error?: string;
   }>;
   tokens?: BridgeToken[];
+}
+
+export interface BuildUserStepsResponse {
+  userSteps: QuoteUserStep[];
 }
 
 export interface BridgeStatusResponse {

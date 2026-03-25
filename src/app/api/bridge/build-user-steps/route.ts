@@ -17,30 +17,24 @@ export async function POST(request: NextRequest) {
         : "stargate") as BridgeApiProvider;
     const payload = { ...body };
     delete payload.provider;
-
-    const fetchQuoteJson =
+    const fetchBuildJson =
       provider === "layerzero"
         ? (path: string, init?: RequestInit) =>
             fetchLayerZeroJson(path, init, { includeApiKey: true, apiKey })
         : provider === "stargate-v2"
           ? fetchStargateV2ApiJson
           : fetchStargateApiJson;
-
-    const { response, data } = await fetchQuoteJson("/quotes", {
+    const { response, data } = await fetchBuildJson("/build-user-steps", {
       method: "POST",
       body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
       const message =
-        (provider === "stargate-v2" &&
-        (data?.code === "UNSUPPORTED_ROUTE" || data?.message === "Unsupported route")
-          ? "This route is not supported by Stargate v2 fallback. Add a LayerZero API key and retry Direct API."
-          : null) ||
         (typeof data?.message === "string" && data.message) ||
         (typeof data?.error === "string" && data.error) ||
         (typeof data?.error?.message === "string" && data.error.message) ||
-        "Failed to request bridge quote.";
+        "Failed to build user steps.";
 
       return NextResponse.json({ error: message }, { status: response.status });
     }
@@ -49,8 +43,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return NextResponse.json(
       {
-        error:
-          error instanceof Error ? error.message : "Failed to request bridge quote.",
+        error: error instanceof Error ? error.message : "Failed to build user steps.",
       },
       { status: 500 },
     );

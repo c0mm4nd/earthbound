@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   erc20Abi,
   formatUnits,
-  isAddress,
   parseUnits,
   type Address,
   type Hex,
@@ -18,19 +17,38 @@ import {
   useReadContract,
   useSwitchChain,
 } from "wagmi";
-import { startTransition, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import type {
+  BridgeApiProvider,
   BridgeChain,
   BridgeQuote,
   BridgeQuoteResponse,
   BridgeStatusResponse,
   BridgeToken,
+  BuildUserStepsResponse,
   QuoteFee,
   QuoteUserStep,
   SignatureUserStep,
   SignatureTypedDataField,
   TransactionUserStep,
 } from "@/lib/bridge-types";
+import {
+  canExecuteSourceChainType,
+  getAddressValidationCopy,
+  getChainTypeDisplayLabel,
+  getDestinationAddressPlaceholder,
+  getWalletConnectLabel,
+  validateAddressForChainType,
+} from "@/lib/bridge-chain-utils";
+import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
 import {
   walletChainByKey,
   wagmiConfig,
@@ -41,8 +59,10 @@ const NATIVE_TOKEN_ADDRESS = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const TRANSFER_TERMINAL_STATUSES = new Set([
   "COMPLETED",
   "DELIVERED",
+  "SUCCEEDED",
   "FAILED",
   "ERROR",
+  "UNKNOWN",
   "CANCELLED",
 ]);
 const FALLBACK_STARGATE_TOKEN_SYMBOL_ALIASES: Record<string, string> = {
@@ -51,6 +71,8 @@ const FALLBACK_STARGATE_TOKEN_SYMBOL_ALIASES: Record<string, string> = {
   "polygon:0x2791bca1f2de4661ed88a30c99a7a9449aa84174": "USDC.e",
 };
 const STARGATE_ICONS_BASE_URL = "https://icons-ckg.pages.dev/stargate-light";
+const BRIDGE_API_KEY_HEADER = "x-bridge-api-key";
+const LAYERZERO_API_KEY_STORAGE_KEY = "earthbound.layerzero_api_key";
 const SURFACE_CARD_CLASS =
   "rounded-[1.75rem] border border-white/10 bg-[var(--surface-strong)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] sm:p-5";
 const FIELD_CLASS =
@@ -119,6 +141,25 @@ type InlineOptionItem = {
   selected?: boolean;
   onSelect: () => void;
 };
+
+function getBridgeApiRequestHeaders(
+  provider: BridgeApiProvider,
+  apiKey?: string | null,
+): HeadersInit | undefined {
+  if (provider !== "layerzero") {
+    return undefined;
+  }
+
+  const normalizedApiKey = apiKey?.trim();
+
+  if (!normalizedApiKey) {
+    return undefined;
+  }
+
+  return {
+    [BRIDGE_API_KEY_HEADER]: normalizedApiKey,
+  };
+}
 
 async function fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
@@ -432,15 +473,27 @@ function coerceTypedDataStruct(
 
 async function pollTransferStatus(
   quoteId: string,
+  provider: BridgeApiProvider,
+  apiKey?: string,
   txHash?: string,
   onUpdate?: (status: BridgeStatusResponse) => void,
 ) {
   let latest: BridgeStatusResponse | null = null;
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    const query = txHash ? `?txHash=${txHash}` : "";
+    const searchParams = new URLSearchParams();
+
+    if (txHash) {
+      searchParams.set("txHash", txHash);
+    }
+
+    searchParams.set("provider", provider);
+    const query = searchParams.toString() ? `?${searchParams.toString()}` : "";
     const status = await fetchJson<BridgeStatusResponse>(
       `/api/bridge/status/${quoteId}${query}`,
+      {
+        headers: getBridgeApiRequestHeaders(provider, apiKey),
+      },
     );
     latest = status;
     onUpdate?.(status);
@@ -453,6 +506,21 @@ async function pollTransferStatus(
   }
 
   return latest;
+}
+
+async function buildUserSteps(
+  quoteId: string,
+  provider: BridgeApiProvider,
+  apiKey?: string,
+) {
+  return fetchJson<BuildUserStepsResponse>("/api/bridge/build-user-steps", {
+    method: "POST",
+    headers: getBridgeApiRequestHeaders(provider, apiKey),
+    body: JSON.stringify({
+      provider,
+      quoteId,
+    }),
+  });
 }
 
 function getExecutionTone(phase: ExecutionPhase) {
@@ -703,11 +771,87 @@ function InlineOptionList({
   );
 }
 
+function LayerZeroApiKeyModal({
+  apiKey,
+  error,
+  onApiKeyChange,
+  onClose,
+  onSubmit,
+}: {
+  apiKey: string;
+  error?: string | null;
+  onApiKeyChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-[1.6rem] border border-white/12 bg-[var(--panel)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+              LayerZero
+            </p>
+            <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">
+              Direct API Key
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+              Enter your LayerZero Transfer API key before switching to Direct API mode. Leave it
+              blank to continue with Stargate v2 fallback. The key is stored only in this browser.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-sm text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white"
+            aria-label="Close LayerZero API key dialog"
+          >
+            ×
+          </button>
+        </div>
+
+        <form onSubmit={onSubmit} className="mt-5 space-y-3">
+          <label className="block space-y-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+              API Key
+            </span>
+            <input
+              type="password"
+              autoFocus
+              value={apiKey}
+              onChange={(event) => onApiKeyChange(event.target.value)}
+              placeholder="lz_..."
+              className={FIELD_CLASS}
+            />
+          </label>
+
+          {error ? (
+            <div className="rounded-[1rem] border border-white/18 bg-white/[0.04] px-3 py-2.5 text-sm text-white">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} className={GHOST_BUTTON_CLASS}>
+              Cancel
+            </button>
+            <button type="submit" className={PRIMARY_BUTTON_CLASS}>
+              Continue
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export function BridgeApp() {
   const { address, chainId, isConnected } = useAccount();
   const { connect, connectors, isPending: isConnectPending } = useConnect();
   const { disconnect } = useDisconnect();
   const { switchChainAsync, isPending: isSwitchPending } = useSwitchChain();
+  const bridgeWallets = useBridgeWallets();
   const [srcChainKey, setSrcChainKey] = useState("");
   const [dstChainKey, setDstChainKey] = useState("");
   const [srcTokenAddress, setSrcTokenAddress] = useState("");
@@ -728,6 +872,10 @@ export function BridgeApp() {
   >([]);
   const [refreshCountdownNow, setRefreshCountdownNow] = useState(() => Date.now());
   const [tokenDisplaySource, setTokenDisplaySource] = useState<TokenDisplaySource>("stargate");
+  const [layerZeroApiKey, setLayerZeroApiKey] = useState("");
+  const [layerZeroApiKeyDraft, setLayerZeroApiKeyDraft] = useState("");
+  const [layerZeroApiKeyError, setLayerZeroApiKeyError] = useState<string | null>(null);
+  const [isLayerZeroApiKeyModalOpen, setIsLayerZeroApiKeyModalOpen] = useState(false);
   const balanceSwitchAttemptRef = useRef<string | null>(null);
   const notificationTimeoutsRef = useRef(new Map<string, number>());
   const quoteRequestIdRef = useRef(0);
@@ -773,10 +921,7 @@ export function BridgeApp() {
 
   const supportedChains = useMemo(() => {
     return (chainsQuery.data?.chains ?? []).filter(
-      (chain) =>
-        chain.chainType === "EVM" &&
-        chain.chainKey in walletChainByKey &&
-        chain.chainKey !== "stable",
+      (chain) => chain.chainKey !== "stable",
     );
   }, [chainsQuery.data]);
 
@@ -873,6 +1018,32 @@ export function BridgeApp() {
     selectedSrcTokenPresentation?.iconUrl ?? getStargateTokenIconUrl(selectedSrcTokenSymbol);
   const selectedDstTokenIconUrl =
     selectedDstTokenPresentation?.iconUrl ?? getStargateTokenIconUrl(selectedDstTokenSymbol);
+  const hasLayerZeroApiKey = Boolean(layerZeroApiKey.trim());
+  const bridgeApiProvider =
+    tokenDisplaySource === "layerzero"
+      ? (hasLayerZeroApiKey ? "layerzero" : "stargate-v2")
+      : "stargate";
+  const isLayerZeroFallback = tokenDisplaySource === "layerzero" && !hasLayerZeroApiKey;
+  const sourceChainType = srcChain?.chainType;
+  const destinationChainType = dstChain?.chainType;
+  const sourceChainUsesEvmWallet =
+    sourceChainType === "EVM" && Boolean(srcChain && srcChain.chainKey in walletChainByKey);
+  const activeExternalWalletSession = sourceChainType
+    ? bridgeWallets.walletSessionsByChainType[sourceChainType] ?? null
+    : null;
+  const sourceWalletAddress = sourceChainUsesEvmWallet
+    ? (address ?? "")
+    : (activeExternalWalletSession?.address ?? "");
+  const sourceWalletConnected = sourceChainUsesEvmWallet
+    ? Boolean(address && isConnected)
+    : Boolean(activeExternalWalletSession?.address);
+  const sourceWalletLabel = sourceChainUsesEvmWallet
+    ? "EVM Wallet"
+    : activeExternalWalletSession?.label ?? getChainTypeDisplayLabel(sourceChainType);
+  const destinationAddressPlaceholder = getDestinationAddressPlaceholder(destinationChainType);
+  const destinationAddressValidationCopy = getAddressValidationCopy(destinationChainType);
+  const canExecuteSelectedSourceChain = canExecuteSourceChainType(sourceChainType);
+  const walletConnectButtonCopy = getWalletConnectLabel(sourceChainType);
 
   const srcChainItems = useMemo<InlineOptionItem[]>(
     () =>
@@ -881,8 +1052,15 @@ export function BridgeApp() {
         badgeText: chain.shortName,
         iconUrl: getStargateChainIconUrl(chain.chainKey),
         title: chain.name,
-        subtitle: `${chain.shortName} · ${chain.nativeCurrency.symbol}`,
-        searchTerms: [chain.chainKey, chain.name, chain.shortName, chain.nativeCurrency.symbol],
+        subtitle: `${chain.shortName} · ${getChainTypeDisplayLabel(chain.chainType)}`,
+        meta: chain.nativeCurrency.symbol,
+        searchTerms: [
+          chain.chainKey,
+          chain.name,
+          chain.shortName,
+          chain.nativeCurrency.symbol,
+          chain.chainType,
+        ],
         selected: chain.chainKey === srcChainKey,
         onSelect: () => setSrcChainKey(chain.chainKey),
       })),
@@ -924,8 +1102,15 @@ export function BridgeApp() {
         badgeText: chain.shortName,
         iconUrl: getStargateChainIconUrl(chain.chainKey),
         title: chain.name,
-        subtitle: `${chain.shortName} · ${chain.nativeCurrency.symbol}`,
-        searchTerms: [chain.chainKey, chain.name, chain.shortName, chain.nativeCurrency.symbol],
+        subtitle: `${chain.shortName} · ${getChainTypeDisplayLabel(chain.chainType)}`,
+        meta: chain.nativeCurrency.symbol,
+        searchTerms: [
+          chain.chainKey,
+          chain.name,
+          chain.shortName,
+          chain.nativeCurrency.symbol,
+          chain.chainType,
+        ],
         selected: chain.chainKey === dstChainKey,
         onSelect: () => setDstChainKey(chain.chainKey),
       })),
@@ -961,17 +1146,17 @@ export function BridgeApp() {
   );
 
   const quoteRequestState = useMemo(() => {
-    if (!address) {
+    if (!sourceWalletAddress) {
       return {
         ready: false,
-        reason: "Connect a wallet before requesting a quote.",
+        reason: `${getWalletConnectLabel(sourceChainType)} before requesting a quote.`,
       } as const;
     }
 
     if (!srcChain || !dstChain || srcChain.chainKey === dstChain.chainKey) {
       return {
         ready: false,
-        reason: "Choose two different EVM chains.",
+        reason: "Choose two different chains.",
       } as const;
     }
 
@@ -982,10 +1167,10 @@ export function BridgeApp() {
       } as const;
     }
 
-    if (!destinationAddress || !isAddress(destinationAddress)) {
+    if (!destinationAddress || !validateAddressForChainType(destinationChainType, destinationAddress)) {
       return {
         ready: false,
-        reason: "Enter a valid EVM destination address.",
+        reason: destinationAddressValidationCopy,
       } as const;
     }
 
@@ -1003,13 +1188,22 @@ export function BridgeApp() {
         ready: true,
         reason: null,
         payload: {
+          provider: bridgeApiProvider,
           srcChainKey: srcChain.chainKey,
           dstChainKey: dstChain.chainKey,
           srcTokenAddress: selectedSrcToken.address,
           dstTokenAddress: selectedDstToken.address,
-          srcWalletAddress: address,
+          srcWalletAddress: sourceWalletAddress,
           dstWalletAddress: destinationAddress,
           amount: parsedAmount.toString(),
+          options: {
+            amountType: "EXACT_SRC_AMOUNT",
+            feeTolerance: {
+              type: "PERCENT",
+              amount: 0.5,
+            },
+            dstNativeDropAmount: "0",
+          },
         },
       } as const;
     } catch {
@@ -1019,12 +1213,16 @@ export function BridgeApp() {
       } as const;
     }
   }, [
-    address,
     amountInput,
+    bridgeApiProvider,
+    destinationAddressValidationCopy,
+    destinationChainType,
     destinationAddress,
     dstChain,
     selectedDstToken,
     selectedSrcToken,
+    sourceChainType,
+    sourceWalletAddress,
     srcChain,
   ]);
 
@@ -1051,7 +1249,8 @@ export function BridgeApp() {
   const bestQuoteRouteKey = quotes[0] ? getQuoteRouteKey(quotes[0]) : null;
 
   const balanceEnabled = Boolean(
-    address &&
+    sourceChainUsesEvmWallet &&
+      address &&
       srcChain &&
       selectedSrcToken &&
       chainId === srcChain.chainId &&
@@ -1100,8 +1299,12 @@ export function BridgeApp() {
       return "Select a token";
     }
 
-    if (!address) {
-      return "Connect wallet";
+    if (!sourceWalletConnected) {
+      return walletConnectButtonCopy;
+    }
+
+    if (!sourceChainUsesEvmWallet) {
+      return `${sourceWalletLabel} connected`;
     }
 
     if (srcChain && chainId !== srcChain.chainId) {
@@ -1122,14 +1325,17 @@ export function BridgeApp() {
 
     return "Unavailable";
   }, [
-    address,
     chainId,
     isBalanceLoading,
     isSwitchPending,
     selectedBalanceValue,
     selectedSrcToken,
     selectedSrcTokenSymbol,
+    sourceChainUsesEvmWallet,
+    sourceWalletConnected,
+    sourceWalletLabel,
     srcChain,
+    walletConnectButtonCopy,
   ]);
 
   function dismissExecutionNotification(notificationId: string) {
@@ -1198,6 +1404,103 @@ export function BridgeApp() {
     );
   }
 
+  function openLayerZeroApiKeyModal() {
+    setLayerZeroApiKeyDraft(layerZeroApiKey);
+    setLayerZeroApiKeyError(null);
+    setIsLayerZeroApiKeyModalOpen(true);
+  }
+
+  function closeLayerZeroApiKeyModal() {
+    setLayerZeroApiKeyDraft(layerZeroApiKey);
+    setLayerZeroApiKeyError(null);
+    setIsLayerZeroApiKeyModalOpen(false);
+  }
+
+  function handleLayerZeroApiKeySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const normalizedApiKey = layerZeroApiKeyDraft.trim();
+    setLayerZeroApiKey(normalizedApiKey);
+
+    try {
+      if (normalizedApiKey) {
+        window.localStorage.setItem(LAYERZERO_API_KEY_STORAGE_KEY, normalizedApiKey);
+      } else {
+        window.localStorage.removeItem(LAYERZERO_API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage failures and continue with the in-memory key for this session.
+    }
+
+    setLayerZeroApiKeyError(null);
+    setIsLayerZeroApiKeyModalOpen(false);
+    startTransition(() => {
+      setTokenDisplaySource("layerzero");
+    });
+  }
+
+  function handleToggleRouteSource() {
+    if (tokenDisplaySource === "stargate") {
+      openLayerZeroApiKeyModal();
+      return;
+    }
+
+    startTransition(() => {
+      setTokenDisplaySource("stargate");
+    });
+  }
+
+  async function handleConnectSourceWallet() {
+    if (!srcChain) {
+      return;
+    }
+
+    if (sourceChainUsesEvmWallet) {
+      if (injectedConnector) {
+        connect({ connector: injectedConnector });
+      }
+
+      return;
+    }
+
+    try {
+      if (srcChain.chainType === "EVM") {
+        throw new Error(`${srcChain.shortName} is not configured in the current EVM wallet adapter.`);
+      }
+
+      await bridgeWallets.connectWallet(srcChain.chainType);
+    } catch (error) {
+      pushExecutionNotification({
+        tone: "danger",
+        title: "Wallet connection failed",
+        message: getErrorMessage(error),
+        persistent: true,
+      });
+    }
+  }
+
+  async function handleDisconnectSourceWallet() {
+    if (!srcChain) {
+      return;
+    }
+
+    if (sourceChainUsesEvmWallet) {
+      disconnect();
+      return;
+    }
+
+    try {
+      await bridgeWallets.disconnectWallet(srcChain.chainType);
+    } catch (error) {
+      pushExecutionNotification({
+        tone: "danger",
+        title: "Wallet disconnect failed",
+        message: getErrorMessage(error),
+        persistent: true,
+      });
+    }
+  }
+
   useEffect(() => {
     const notificationTimeouts = notificationTimeoutsRef.current;
 
@@ -1208,6 +1511,18 @@ export function BridgeApp() {
 
       notificationTimeouts.clear();
     };
+  }, []);
+
+  useEffect(() => {
+    try {
+      const savedApiKey = window.localStorage.getItem(LAYERZERO_API_KEY_STORAGE_KEY)?.trim();
+
+      if (savedApiKey) {
+        setLayerZeroApiKey(savedApiKey);
+      }
+    } catch {
+      // Ignore storage failures.
+    }
   }, []);
 
   useEffect(() => {
@@ -1253,13 +1568,19 @@ export function BridgeApp() {
 
   useEffect(() => {
     setDestinationAddress((current) => {
-      if (!address) {
-        return "";
+      if (!sourceWalletAddress) {
+        return current;
       }
 
-      return current || address;
+      if (current && validateAddressForChainType(destinationChainType, current)) {
+        return current;
+      }
+
+      return validateAddressForChainType(destinationChainType, sourceWalletAddress)
+        ? sourceWalletAddress
+        : current;
     });
-  }, [address]);
+  }, [destinationChainType, sourceWalletAddress]);
 
   useEffect(() => {
     isQuotingRef.current = isQuoting;
@@ -1267,6 +1588,7 @@ export function BridgeApp() {
 
   useEffect(() => {
     if (
+      !sourceChainUsesEvmWallet ||
       !address ||
       !isConnected ||
       !srcChain ||
@@ -1305,6 +1627,7 @@ export function BridgeApp() {
     isConnected,
     isSwitchPending,
     selectedSrcToken,
+    sourceChainUsesEvmWallet,
     srcChain,
     switchChainAsync,
   ]);
@@ -1359,7 +1682,7 @@ export function BridgeApp() {
     setQuoteError(null);
     setLastQuoteUpdatedAt(null);
     setExecutionState({ phase: "idle" });
-  }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress]);
+  }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, bridgeApiProvider]);
 
   async function handleRequestQuote(mode: "auto" | "manual" | "refresh" = "manual") {
     if (!quoteRequestState.ready) {
@@ -1383,6 +1706,7 @@ export function BridgeApp() {
     try {
       const quoteResponse = await fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
         method: "POST",
+        headers: getBridgeApiRequestHeaders(bridgeApiProvider, layerZeroApiKey),
         body: JSON.stringify(quoteRequestState.payload),
       });
 
@@ -1468,7 +1792,7 @@ export function BridgeApp() {
   }, [executionState.phase, lastQuoteUpdatedAt, quoteRequestKey, quoteRequestState.ready]);
 
   async function handleExecuteQuote() {
-    if (!quote || !address || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken) {
+    if (!quote || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken) {
       return;
     }
 
@@ -1510,132 +1834,202 @@ export function BridgeApp() {
     });
 
     try {
-      if (chainId !== srcChain.chainId) {
-        updateExecutionHistoryItem(historyId, {
-          currentStep: `Switching wallet to ${srcChain.shortName}`,
-        });
-        pushExecutionNotification({
-          tone: "neutral",
-          title: "Switch network",
-          message: `Move wallet to ${srcChain.shortName} to continue.`,
-        });
-        await switchChainAsync({ chainId: srcChain.chainId as SupportedChainId });
-      }
-
-      let lastTxHash: Hex | undefined;
+      let lastTxHash: string | undefined;
+      let resolvedUserSteps = quote.userSteps;
       let latestTransferStatus = "";
 
-      for (const [index, step] of quote.userSteps.entries()) {
-        if (isTransactionStep(step)) {
-          const payload = step.transaction?.encoded;
+      if (!resolvedUserSteps.length) {
+        updateExecutionHistoryItem(historyId, {
+          currentStep: `Building ${getChainTypeDisplayLabel(sourceChainType)} user steps`,
+        });
+        const builtUserStepsResponse = await buildUserSteps(
+          quote.id,
+          bridgeApiProvider,
+          layerZeroApiKey,
+        );
 
-          if (!payload?.to) {
-            throw new Error(`Step ${index + 1} is missing transaction payload.`);
-          }
+        if (builtUserStepsResponse.userSteps.length) {
+          resolvedUserSteps = builtUserStepsResponse.userSteps;
+        } else {
+          throw new Error("No executable steps returned for this quote.");
+        }
+      }
 
+      if (sourceChainType === "EVM") {
+        if (!address) {
+          throw new Error("Connect an EVM wallet before executing this route.");
+        }
+
+        if (chainId !== srcChain.chainId) {
           updateExecutionHistoryItem(historyId, {
-            currentStep: step.description ?? `Sending transaction step ${index + 1}`,
-          });
-
-          const hash = await sendTransaction(wagmiConfig, {
-            account: address as Address,
-            chainId: srcChain.chainId as SupportedChainId,
-            to: payload.to as Address,
-            data: payload.data,
-            value: payload.value ? BigInt(payload.value) : BigInt(0),
-            gas: payload.gasLimit ? BigInt(payload.gasLimit) : undefined,
-          });
-
-          lastTxHash = hash;
-          setExecutionState((current) => ({
-            ...current,
-            txHash: hash,
-          }));
-          updateExecutionHistoryItem(historyId, {
-            txHash: hash,
-            currentStep: "Transaction submitted",
+            currentStep: `Switching wallet to ${srcChain.shortName}`,
           });
           pushExecutionNotification({
             tone: "neutral",
-            title: "Transaction submitted",
-            message: hash,
+            title: "Switch network",
+            message: `Move wallet to ${srcChain.shortName} to continue.`,
           });
+          await switchChainAsync({ chainId: srcChain.chainId as SupportedChainId });
+        }
 
-          await waitForTransactionReceipt(wagmiConfig, {
-            chainId: srcChain.chainId as SupportedChainId,
-            hash,
-          });
+        for (const [index, step] of resolvedUserSteps.entries()) {
+          if (isTransactionStep(step) && step.chainType === "EVM") {
+            const payload = step.transaction?.encoded;
 
+            if (!payload?.to) {
+              throw new Error(`Step ${index + 1} is missing transaction payload.`);
+            }
+
+            updateExecutionHistoryItem(historyId, {
+              currentStep: step.description ?? `Sending transaction step ${index + 1}`,
+            });
+
+            const hash = await sendTransaction(wagmiConfig, {
+              account: address as Address,
+              chainId: srcChain.chainId as SupportedChainId,
+              to: payload.to as Address,
+              data: payload.data,
+              value: payload.value ? BigInt(payload.value) : BigInt(0),
+              gas: payload.gasLimit ? BigInt(payload.gasLimit) : undefined,
+            });
+
+            lastTxHash = hash;
+            setExecutionState((current) => ({
+              ...current,
+              txHash: hash,
+            }));
+            updateExecutionHistoryItem(historyId, {
+              txHash: hash,
+              currentStep: "Transaction submitted",
+            });
+            pushExecutionNotification({
+              tone: "neutral",
+              title: "Transaction submitted",
+              message: hash,
+            });
+
+            await waitForTransactionReceipt(wagmiConfig, {
+              chainId: srcChain.chainId as SupportedChainId,
+              hash,
+            });
+
+            updateExecutionHistoryItem(historyId, {
+              currentStep: "Transaction confirmed",
+            });
+            pushExecutionNotification({
+              tone: "neutral",
+              title: "Transaction confirmed",
+              message: shortenAddress(hash),
+            });
+            continue;
+          }
+
+          if (isSignatureStep(step) && step.chainType === "EVM") {
+            const typedData = step.signature?.typedData;
+
+            if (!typedData?.primaryType) {
+              throw new Error(`Step ${index + 1} is missing typed data.`);
+            }
+
+            updateExecutionHistoryItem(historyId, {
+              currentStep: step.description ?? `Signing step ${index + 1}`,
+            });
+
+            const signature = await (signTypedData as (...args: unknown[]) => Promise<Hex>)(
+              wagmiConfig,
+              {
+                account: address as Address,
+                domain: coerceTypedDataStruct(
+                  typedData.types.EIP712Domain ?? [],
+                  typedData.domain ?? {},
+                  typedData.types,
+                ),
+                message: coerceTypedDataStruct(
+                  typedData.types[typedData.primaryType] ?? [],
+                  typedData.message ?? {},
+                  typedData.types,
+                ),
+                primaryType: typedData.primaryType,
+                types: typedData.types,
+              },
+            );
+
+            updateExecutionHistoryItem(historyId, {
+              currentStep: `Signature collected for step ${index + 1}`,
+            });
+
+            await fetchJson("/api/bridge/submit-signature", {
+              method: "POST",
+              headers: getBridgeApiRequestHeaders(bridgeApiProvider, layerZeroApiKey),
+              body: JSON.stringify({
+                provider: bridgeApiProvider,
+                quoteId: quote.id,
+                signatures: [signature],
+              }),
+            });
+
+            updateExecutionHistoryItem(historyId, {
+              currentStep: `Signature submitted for step ${index + 1}`,
+            });
+            pushExecutionNotification({
+              tone: "neutral",
+              title: "Signature submitted",
+              message: `Step ${index + 1}`,
+            });
+            continue;
+          }
+
+          throw new Error(
+            `Unsupported EVM execution step: ${step.type}${step.chainType ? ` on ${step.chainType}` : ""}.`,
+          );
+        }
+      } else if (sourceChainType) {
+        updateExecutionHistoryItem(historyId, {
+          currentStep: `Submitting ${getChainTypeDisplayLabel(sourceChainType)} transaction`,
+        });
+        const submittedTxHash = await bridgeWallets.executeUserSteps(
+          sourceChainType,
+          resolvedUserSteps,
+        );
+
+        if (submittedTxHash) {
+          lastTxHash = submittedTxHash;
+          setExecutionState((current) => ({
+            ...current,
+            txHash: submittedTxHash,
+          }));
           updateExecutionHistoryItem(historyId, {
+            txHash: submittedTxHash,
             currentStep: "Transaction confirmed",
           });
           pushExecutionNotification({
             tone: "neutral",
             title: "Transaction confirmed",
-            message: shortenAddress(hash),
+            message: shortenAddress(submittedTxHash),
           });
-          continue;
-        }
-
-        if (isSignatureStep(step)) {
-          const typedData = step.signature?.typedData;
-
-          if (!typedData?.primaryType) {
-            throw new Error(`Step ${index + 1} is missing typed data.`);
-          }
-
+        } else {
           updateExecutionHistoryItem(historyId, {
-            currentStep: step.description ?? `Signing step ${index + 1}`,
-          });
-
-          const signature = await (signTypedData as (...args: unknown[]) => Promise<Hex>)(
-            wagmiConfig,
-            {
-              account: address as Address,
-              domain: coerceTypedDataStruct(
-                typedData.types.EIP712Domain ?? [],
-                typedData.domain ?? {},
-                typedData.types,
-              ),
-              message: coerceTypedDataStruct(
-                typedData.types[typedData.primaryType] ?? [],
-                typedData.message ?? {},
-                typedData.types,
-              ),
-              primaryType: typedData.primaryType,
-              types: typedData.types,
-            },
-          );
-
-          updateExecutionHistoryItem(historyId, {
-            currentStep: `Signature collected for step ${index + 1}`,
-          });
-
-          await fetchJson("/api/bridge/submit-signature", {
-            method: "POST",
-            body: JSON.stringify({
-              quoteId: quote.id,
-              signatures: [signature],
-            }),
-          });
-
-          updateExecutionHistoryItem(historyId, {
-            currentStep: `Signature submitted for step ${index + 1}`,
+            currentStep: "Transaction submitted",
           });
           pushExecutionNotification({
             tone: "neutral",
-            title: "Signature submitted",
-            message: `Step ${index + 1}`,
+            title: "Transaction submitted",
+            message: getChainTypeDisplayLabel(sourceChainType),
           });
-          continue;
         }
-        throw new Error(`Unsupported user step type: ${step.type}`);
+      } else {
+        throw new Error("Missing source chain type.");
       }
 
       updateExecutionHistoryItem(historyId, {
         currentStep: "Waiting for transfer settlement",
       });
-      const transferStatus = await pollTransferStatus(quote.id, lastTxHash, (status) => {
+      const transferStatus = await pollTransferStatus(
+        quote.id,
+        bridgeApiProvider,
+        layerZeroApiKey,
+        lastTxHash,
+        (status) => {
         const statusError = status.error ?? status.substatus;
         const isTerminal = TRANSFER_TERMINAL_STATUSES.has(status.status);
 
@@ -1668,14 +2062,17 @@ export function BridgeApp() {
             });
           }
         }
-      });
+        },
+      );
 
       if (!transferStatus) {
         throw new Error("Transfer status timed out before a terminal update.");
       }
 
       const succeeded =
-        transferStatus.status === "COMPLETED" || transferStatus.status === "DELIVERED";
+        transferStatus.status === "COMPLETED" ||
+        transferStatus.status === "DELIVERED" ||
+        transferStatus.status === "SUCCEEDED";
       const transferError = transferStatus.error ?? transferStatus.substatus;
 
       setExecutionState({
@@ -1745,7 +2142,11 @@ export function BridgeApp() {
     canRequestQuote && lastQuoteUpdatedAt
       ? Math.max(0, Math.ceil((lastQuoteUpdatedAt + 10_000 - refreshCountdownNow) / 1_000))
       : null;
-  const canExecuteQuote = Boolean(quote) && executionState.phase !== "running";
+  const canExecuteQuote =
+    Boolean(quote) &&
+    executionState.phase !== "running" &&
+    sourceWalletConnected &&
+    canExecuteSelectedSourceChain;
   const refreshButtonCopy = isQuoting
     ? quote
       ? "Refreshing..."
@@ -1763,9 +2164,23 @@ export function BridgeApp() {
   const tokenDisplaySourceLabel =
     tokenDisplaySource === "stargate" ? "Stargate" : "LayerZero";
   const tokenDisplaySourceSubcopy =
-    tokenDisplaySource === "stargate" ? "Default metadata" : "Transfer API";
+    tokenDisplaySource === "stargate"
+      ? "VT wrapper"
+      : hasLayerZeroApiKey
+        ? "Direct API · key ready"
+        : "Direct API · v2 fallback";
   const tokenDisplaySourceNextLabel =
     tokenDisplaySource === "stargate" ? "Switch to LayerZero" : "Switch to Stargate";
+  const walletConnectPending = sourceChainUsesEvmWallet
+    ? isConnectPending
+    : bridgeWallets.isPending;
+  const providerNoticeCopy = isLayerZeroFallback
+    ? "LayerZero key not provided. Falling back to Stargate v2 until you add one."
+    : null;
+  const executionCapabilityCopy =
+    srcChain && !canExecuteSelectedSourceChain
+      ? `${getChainTypeDisplayLabel(srcChain.chainType)} source execution is not available in this build yet.`
+      : null;
   function handleFillMax() {
     if (!selectedSrcToken || selectedBalanceValue === undefined) {
       return;
@@ -1826,27 +2241,28 @@ export function BridgeApp() {
                 </span>
               </StatusPill>
             ) : null}
-            {isConnected ? (
+            {sourceWalletConnected ? (
               <>
                 <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm text-white">
-                  {shortenAddress(address)}
+                  {shortenAddress(sourceWalletAddress)}
                 </span>
-                <button type="button" onClick={() => disconnect()} className={GHOST_BUTTON_CLASS}>
+                <button
+                  type="button"
+                  onClick={() => void handleDisconnectSourceWallet()}
+                  disabled={walletConnectPending}
+                  className={GHOST_BUTTON_CLASS}
+                >
                   Disconnect
                 </button>
               </>
             ) : (
               <button
                 type="button"
-                disabled={!injectedConnector || isConnectPending}
-                onClick={() => {
-                  if (injectedConnector) {
-                    connect({ connector: injectedConnector });
-                  }
-                }}
+                disabled={(sourceChainUsesEvmWallet && !injectedConnector) || walletConnectPending}
+                onClick={() => void handleConnectSourceWallet()}
                 className={PRIMARY_BUTTON_CLASS}
               >
-                {isConnectPending ? "Connecting..." : "Connect Wallet"}
+                {walletConnectPending ? "Connecting..." : walletConnectButtonCopy}
               </button>
             )}
           </div>
@@ -1865,13 +2281,7 @@ export function BridgeApp() {
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    startTransition(() => {
-                      setTokenDisplaySource((current) =>
-                        current === "stargate" ? "layerzero" : "stargate",
-                      );
-                    });
-                  }}
+                  onClick={handleToggleRouteSource}
                   aria-label={tokenDisplaySourceNextLabel}
                   title={tokenDisplaySourceNextLabel}
                   className="group inline-flex items-center gap-3 rounded-[1.05rem] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-3 py-2 text-left transition hover:border-white/24 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05))]"
@@ -1887,7 +2297,7 @@ export function BridgeApp() {
                   </span>
                   <span className="min-w-0">
                     <span className="block text-[9px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)] transition group-hover:text-white/60">
-                      Token Source
+                      Route Source
                     </span>
                     <span className="mt-0.5 flex items-center gap-2">
                       <span className="text-xs font-medium text-white">{tokenDisplaySourceLabel}</span>
@@ -2018,9 +2428,9 @@ export function BridgeApp() {
               </div>
             </div>
 
-            {quoteError ? (
+            {quoteError || providerNoticeCopy || executionCapabilityCopy ? (
               <div className="mt-3 rounded-[1.25rem] border border-white/18 bg-white/[0.04] px-4 py-3 text-sm text-white">
-                {quoteError}
+                {quoteError ?? providerNoticeCopy ?? executionCapabilityCopy}
               </div>
             ) : null}
 
@@ -2032,7 +2442,7 @@ export function BridgeApp() {
                       Destination address
                     </span>
                     <input
-                      placeholder="0x..."
+                      placeholder={destinationAddressPlaceholder}
                       value={destinationAddress}
                       onChange={(event) => setDestinationAddress(event.target.value)}
                       className={`${FIELD_CLASS} h-10 rounded-[1.05rem] px-3 py-2 text-xs`}
@@ -2334,6 +2744,21 @@ export function BridgeApp() {
           </aside>
         </main>
       </div>
+
+      {isLayerZeroApiKeyModalOpen ? (
+        <LayerZeroApiKeyModal
+          apiKey={layerZeroApiKeyDraft}
+          error={layerZeroApiKeyError}
+          onApiKeyChange={(value) => {
+            setLayerZeroApiKeyDraft(value);
+            if (layerZeroApiKeyError) {
+              setLayerZeroApiKeyError(null);
+            }
+          }}
+          onClose={closeLayerZeroApiKeyModal}
+          onSubmit={handleLayerZeroApiKeySubmit}
+        />
+      ) : null}
 
       <div className="pointer-events-none fixed bottom-3 right-3 z-30 flex max-h-[calc(100vh-1.5rem)] w-[min(30rem,calc(100vw-1.5rem))] flex-col gap-2">
         {executionNotifications.map((notification) => (

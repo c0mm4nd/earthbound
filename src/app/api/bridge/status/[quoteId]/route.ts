@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchStargateApiJson } from "@/lib/layerzero";
+import {
+  fetchLayerZeroJson,
+  fetchStargateApiJson,
+  fetchStargateV2ApiJson,
+} from "@/lib/layerzero";
+import type { BridgeApiProvider } from "@/lib/bridge-types";
 
 type RouteContext = {
   params: Promise<{
@@ -11,11 +16,24 @@ export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const { quoteId } = await context.params;
     const searchParams = new URL(request.url).searchParams;
+    const apiKey = request.headers.get("x-bridge-api-key");
     const txHash = searchParams.get("txHash");
+    const provider = (searchParams.get("provider") === "layerzero"
+      ? "layerzero"
+      : searchParams.get("provider") === "stargate-v2"
+        ? "stargate-v2"
+        : "stargate") as BridgeApiProvider;
     const path = txHash
       ? `/status/${encodeURIComponent(quoteId)}?txHash=${encodeURIComponent(txHash)}`
       : `/status/${encodeURIComponent(quoteId)}`;
-    const { response, data } = await fetchStargateApiJson(path);
+    const fetchStatusJson =
+      provider === "layerzero"
+        ? (statusPath: string, init?: RequestInit) =>
+            fetchLayerZeroJson(statusPath, init, { includeApiKey: true, apiKey })
+        : provider === "stargate-v2"
+          ? fetchStargateV2ApiJson
+          : fetchStargateApiJson;
+    const { response, data } = await fetchStatusJson(path);
 
     if (!response.ok) {
       const message =
