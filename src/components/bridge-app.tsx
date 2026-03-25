@@ -73,6 +73,7 @@ const FALLBACK_STARGATE_TOKEN_SYMBOL_ALIASES: Record<string, string> = {
 const STARGATE_ICONS_BASE_URL = "https://icons-ckg.pages.dev/stargate-light";
 const BRIDGE_API_KEY_HEADER = "x-bridge-api-key";
 const LAYERZERO_API_KEY_STORAGE_KEY = "earthbound.layerzero_api_key";
+const GITHUB_REPOSITORY_URL = "https://github.com/c0mm4nd/earthbound";
 const SURFACE_CARD_CLASS =
   "rounded-[1.75rem] border border-white/10 bg-[var(--surface-strong)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] sm:p-5";
 const FIELD_CLASS =
@@ -575,6 +576,19 @@ function StatusPill({
     >
       {children}
     </span>
+  );
+}
+
+function GitHubIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M12 .5C5.648.5.5 5.648.5 12c0 5.084 3.292 9.399 7.86 10.92.575.106.786-.25.786-.556 0-.274-.01-1-.016-1.963-3.197.695-3.872-1.541-3.872-1.541-.523-1.329-1.277-1.683-1.277-1.683-1.044-.714.079-.7.079-.7 1.155.081 1.763 1.186 1.763 1.186 1.026 1.758 2.692 1.25 3.349.956.104-.743.402-1.25.731-1.538-2.552-.29-5.236-1.276-5.236-5.68 0-1.255.449-2.281 1.184-3.085-.119-.29-.513-1.457.113-3.038 0 0 .965-.309 3.162 1.178a10.986 10.986 0 0 1 5.758 0c2.195-1.487 3.158-1.178 3.158-1.178.628 1.581.234 2.748.115 3.038.737.804 1.182 1.83 1.182 3.085 0 4.415-2.688 5.386-5.248 5.67.413.355.781 1.058.781 2.133 0 1.54-.014 2.782-.014 3.16 0 .309.207.668.791.555C20.212 21.395 23.5 17.082 23.5 12 23.5 5.648 18.352.5 12 .5Z" />
+    </svg>
   );
 }
 
@@ -2209,9 +2223,25 @@ export function BridgeApp() {
               <span className="uppercase tracking-[0.18em] text-[var(--muted-strong)]">
                 Powered by
               </span>
-              <span className="inline-flex max-w-full items-center rounded-full border border-white/10 bg-black px-2.5 py-1 font-medium text-white/84">
+              <a
+                href="https://web3resear.ch"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open the Web3Resear.ch website"
+                className="inline-flex max-w-full items-center rounded-full border border-white/10 bg-black px-2.5 py-1 font-medium text-white/84 transition hover:border-white/24 hover:bg-white/[0.04] hover:text-white"
+              >
                 🦒Web3Resear.ch
-              </span>
+              </a>
+              <a
+                href={GITHUB_REPOSITORY_URL}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open the Earthbound GitHub repository"
+                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black px-2.5 py-1 font-medium text-white/84 transition hover:border-white/24 hover:bg-white/[0.04] hover:text-white"
+              >
+                <GitHubIcon className="h-3.5 w-3.5" />
+                <span>GitHub</span>
+              </a>
             </div>
           </div>
 
