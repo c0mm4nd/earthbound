@@ -1760,8 +1760,12 @@ export function BridgeApp() {
   const activeExecutionHistoryItem = executionState.activeHistoryId
     ? executionHistory.find((item) => item.id === executionState.activeHistoryId) ?? null
     : null;
-  const tokenDisplaySourceButtonCopy =
-    tokenDisplaySource === "stargate" ? "Tokens · Stargate" : "Tokens · LayerZero";
+  const tokenDisplaySourceLabel =
+    tokenDisplaySource === "stargate" ? "Stargate" : "LayerZero";
+  const tokenDisplaySourceSubcopy =
+    tokenDisplaySource === "stargate" ? "Default metadata" : "Transfer API";
+  const tokenDisplaySourceNextLabel =
+    tokenDisplaySource === "stargate" ? "Switch to LayerZero" : "Switch to Stargate";
   function handleFillMax() {
     if (!selectedSrcToken || selectedBalanceValue === undefined) {
       return;
@@ -1822,19 +1826,6 @@ export function BridgeApp() {
                 </span>
               </StatusPill>
             ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                startTransition(() => {
-                  setTokenDisplaySource((current) =>
-                    current === "stargate" ? "layerzero" : "stargate",
-                  );
-                });
-              }}
-              className="inline-flex items-center justify-center rounded-full border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08]"
-            >
-              {tokenDisplaySourceButtonCopy}
-            </button>
             {isConnected ? (
               <>
                 <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm text-white">
@@ -1871,8 +1862,42 @@ export function BridgeApp() {
                 <StatusPill tone="neutral">Bridge</StatusPill>
                 <p className="text-sm font-medium text-white">Transfer</p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {quote ? <StatusPill tone="neutral">{availableQuoteCount} route(s)</StatusPill> : null}
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    startTransition(() => {
+                      setTokenDisplaySource((current) =>
+                        current === "stargate" ? "layerzero" : "stargate",
+                      );
+                    });
+                  }}
+                  aria-label={tokenDisplaySourceNextLabel}
+                  title={tokenDisplaySourceNextLabel}
+                  className="group inline-flex items-center gap-3 rounded-[1.05rem] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-3 py-2 text-left transition hover:border-white/24 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05))]"
+                >
+                  <span
+                    className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold uppercase tracking-[0.18em] transition ${
+                      tokenDisplaySource === "stargate"
+                        ? "border-white bg-white text-black"
+                        : "border-white/14 bg-black text-white"
+                    }`}
+                  >
+                    {tokenDisplaySource === "stargate" ? "SG" : "L0"}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-[9px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)] transition group-hover:text-white/60">
+                      Token Source
+                    </span>
+                    <span className="mt-0.5 flex items-center gap-2">
+                      <span className="text-xs font-medium text-white">{tokenDisplaySourceLabel}</span>
+                      <span className="text-[10px] text-[var(--muted)]">{tokenDisplaySourceSubcopy}</span>
+                    </span>
+                  </span>
+                  <span className="inline-flex h-7 items-center rounded-full border border-white/10 bg-black px-2.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/72 transition group-hover:border-white/20 group-hover:text-white">
+                    Switch
+                  </span>
+                </button>
                 {executionState.transferStatus ? (
                   <StatusPill tone={executionTone}>{executionState.transferStatus}</StatusPill>
                 ) : null}
