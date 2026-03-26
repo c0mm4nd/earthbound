@@ -17,7 +17,7 @@ This repository contains the Next.js application and its thin server-side proxy 
 
 ## API Modes
 
-Earthbound currently supports three practical operating modes:
+Earthbound currently supports four practical operating modes:
 
 ### 1. Stargate
 
@@ -53,9 +53,10 @@ Users can save custom OFT meshes in the browser and execute them directly.
 - The UI now splits custom OFT sourcing into two paths: discovery from LayerZero metadata and manual JSON entry
 - Manual JSON uses the same shape as LayerZero `GET /list`, so discovery results, pasted JSON, exported JSON, and edited JSON all share one format
 - Saved custom OFT configs can be exported and re-imported as LayerZero-style JSON, and older pair-style JSON is still migrated when loaded
-- Requests are routed through `https://metadata.layerzero-api.com/v1/metadata/experiment/ofts/transfer`
-- The app builds approval and send transactions from LayerZero's OFT API rather than the quote aggregation API
-- Current direct execution scope for this mode is EVM and Solana source routes, with destination chains following the app's supported address formats
+- Discovery still uses `https://metadata.layerzero-api.com/v1/metadata/experiment/ofts/list`
+- Execution no longer depends on the LayerZero OFT transfer API or a LayerZero API key
+- The app now quotes `quoteOFT` and `quoteSend` on-chain, then builds approval and send calldata locally
+- Current local execution scope for this mode is Endpoint V2 meshes across the app's supported EVM source and destination routes, with LayerZero V2 endpoint IDs resolved from the official LayerZero chain definitions
 
 ## How It Works
 
@@ -72,7 +73,6 @@ Primary integration points:
 - Token details: `/api/bridge/token-details`
 - Quotes: `/api/bridge/quotes`
 - Custom OFT discovery: `/api/bridge/oft-list`
-- Custom OFT transfer builder: `/api/bridge/oft-transfer`
 - Build user steps: `/api/bridge/build-user-steps`
 - Submit signature: `/api/bridge/submit-signature`
 - Transfer status: `/api/bridge/status/[quoteId]`

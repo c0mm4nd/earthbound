@@ -5,10 +5,16 @@ import {
   erc20Abi,
   formatUnits,
   parseUnits,
+  type Abi,
   type Address,
   type Hex,
 } from "viem";
-import { sendTransaction, signTypedData, waitForTransactionReceipt } from "wagmi/actions";
+import {
+  readContract,
+  sendTransaction,
+  signTypedData,
+  waitForTransactionReceipt,
+} from "wagmi/actions";
 import {
   useAccount,
   useBalance,
@@ -31,7 +37,6 @@ import {
 import type {
   BridgeApiProvider,
   BridgeChain,
-  BridgeChainType,
   BridgeQuote,
   BridgeQuoteResponse,
   BridgeStatusResponse,
@@ -40,7 +45,6 @@ import type {
   CustomOftConfig,
   CustomOftDeployment,
   LayerZeroOftListEntry,
-  LayerZeroOftTransferResponse,
   LayerZeroOftListDeployment,
   LayerZeroOftListResponse,
   QuoteFee,
@@ -59,6 +63,26 @@ import {
   validateAddressForChainType,
 } from "@/lib/bridge-chain-utils";
 import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
+import {
+  buildCustomOftApprovalTransaction,
+  buildCustomOftRecipientBytes32,
+  buildCustomOftSendTransaction,
+  buildDefaultCustomOftExtraOptions,
+  getLayerZeroV2EndpointId,
+  isLocalCustomOftDestinationChainSupported,
+  isLocalCustomOftSourceChainSupported,
+  isSupportedCustomOftEndpointVersion,
+  layerZeroOftV2Abi,
+  type LayerZeroMessagingFee,
+  type LayerZeroOftV2SendParam,
+} from "@/lib/custom-oft";
+import {
+  fetchInjectedEvmBalance,
+  readInjectedEvmContract,
+  sendInjectedEvmTransaction,
+  switchInjectedEvmChain,
+  waitForInjectedEvmTransactionReceipt,
+} from "@/lib/injected-evm";
 import {
   walletChainByKey,
   wagmiConfig,
@@ -394,10 +418,6 @@ function normalizeIdentityAddress(value?: string | null) {
   return value?.trim().toLowerCase() ?? "";
 }
 
-function isCustomOftSupportedSourceChainType(chainType?: BridgeChainType | null) {
-  return chainType === "EVM" || chainType === "SOLANA";
-}
-
 function isLikelyOftContractAddress(value: string) {
   const normalizedValue = value.trim();
 
@@ -500,17 +520,6 @@ function serializeCustomOftConfigs(configs: CustomOftConfig[]): LayerZeroOftList
       return (leftEntries[0]?.name ?? leftSymbol).localeCompare(rightEntries[0]?.name ?? rightSymbol);
     }),
   );
-}
-
-function toCustomOftConfigDraft(config?: CustomOftConfig | null): CustomOftConfigDraft {
-  return {
-    id: config?.id,
-    json: JSON.stringify(
-      config ? serializeCustomOftConfigs([config]) : createCustomOftJsonTemplate(),
-      null,
-      2,
-    ),
-  };
 }
 
 function parseCustomOftDeployment(
@@ -690,12 +699,10 @@ function validateCustomOftConfig(
     !deployments.some((deployment) => {
       const chain = chainByKey.get(deployment.chainKey);
 
-      return chain && isCustomOftSupportedSourceChainType(chain.chainType);
+      return chain && isLocalCustomOftSourceChainSupported(chain.chainType);
     })
   ) {
-    return `Add at least one EVM or Solana deployment as a source chain for ${config.symbol
-      .trim()
-      .toUpperCase()}.`;
+    return `Add at least one EVM deployment as a source chain for ${config.symbol.trim().toUpperCase()}.`;
   }
 
   return null;
@@ -1083,62 +1090,31 @@ function normalizeOftDiscoveryEntries(
 
 function buildCustomOftUserSteps(
   srcChain: BridgeChain,
-  transactionData: LayerZeroOftTransferResponse["transactionData"],
+  approvalTransaction: TransactionPayload | null,
+  populatedTransaction: TransactionPayload,
 ) {
   const steps: QuoteUserStep[] = [];
 
-  if (!transactionData) {
-    throw new Error("Custom OFT API response did not include transaction data.");
-  }
-
   if (srcChain.chainType === "EVM") {
-    if (isRecord(transactionData.approvalTransaction)) {
+    if (approvalTransaction) {
       steps.push({
         type: "TRANSACTION",
         chainKey: srcChain.chainKey,
         chainType: srcChain.chainType,
         description: "Approve token spending",
         transaction: {
-          encoded: transactionData.approvalTransaction as TransactionPayload,
+          encoded: approvalTransaction,
         },
       });
     }
 
-    if (!isRecord(transactionData.populatedTransaction)) {
-      throw new Error("Custom OFT transfer is missing an EVM transaction payload.");
-    }
-
     steps.push({
       type: "TRANSACTION",
       chainKey: srcChain.chainKey,
       chainType: srcChain.chainType,
       description: "Send OFT transfer",
       transaction: {
-        encoded: transactionData.populatedTransaction as TransactionPayload,
-      },
-    });
-
-    return steps;
-  }
-
-  if (srcChain.chainType === "SOLANA") {
-    if (
-      typeof transactionData.populatedTransaction !== "string" ||
-      !transactionData.populatedTransaction.trim()
-    ) {
-      throw new Error("Custom OFT transfer is missing a Solana transaction payload.");
-    }
-
-    steps.push({
-      type: "TRANSACTION",
-      chainKey: srcChain.chainKey,
-      chainType: srcChain.chainType,
-      description: "Send OFT transfer",
-      transaction: {
-        encoded: {
-          encoding: "base64",
-          data: transactionData.populatedTransaction,
-        },
+        encoded: populatedTransaction,
       },
     });
 
@@ -1148,6 +1124,124 @@ function buildCustomOftUserSteps(
   throw new Error(
     `Custom OFT execution is not supported for ${getChainTypeDisplayLabel(srcChain.chainType)} in this build.`,
   );
+}
+
+async function buildLocalCustomOftTransfer(args: {
+  config: Pick<CustomOftConfig, "endpointVersion">;
+  srcChain: BridgeChain;
+  dstChain: BridgeChain;
+  sourceDeployment: CustomOftDeployment;
+  amount: bigint;
+  from: string;
+  to: string;
+  readContractForChain: <T>(args: {
+    abi: Abi;
+    address: Address;
+    args?: readonly unknown[];
+    chain: BridgeChain;
+    functionName: string;
+  }) => Promise<T>;
+}) {
+  const { amount, config, dstChain, from, readContractForChain, sourceDeployment, srcChain, to } =
+    args;
+
+  if (!isSupportedCustomOftEndpointVersion(config.endpointVersion)) {
+    throw new Error("Local custom OFT execution currently supports Endpoint V2 meshes only.");
+  }
+
+  if (srcChain.chainType !== "EVM") {
+    throw new Error("Local custom OFT execution currently supports EVM source chains only.");
+  }
+
+  const dstEid = getLayerZeroV2EndpointId(dstChain.chainKey);
+
+  if (!dstEid) {
+    throw new Error(`No LayerZero V2 endpoint ID is configured for ${dstChain.shortName}.`);
+  }
+
+  const baseSendParam: LayerZeroOftV2SendParam = {
+    dstEid,
+    to: buildCustomOftRecipientBytes32(dstChain.chainType, to),
+    amountLD: amount,
+    minAmountLD: BigInt(0),
+    extraOptions: buildDefaultCustomOftExtraOptions(dstChain.chainType),
+    composeMsg: "0x",
+    oftCmd: "0x",
+  };
+  const quoteOftResult = await readContractForChain<readonly [unknown, unknown, { amountReceivedLD: bigint }]>(
+    {
+    address: sourceDeployment.oftAddress as Address,
+    abi: layerZeroOftV2Abi,
+    functionName: "quoteOFT",
+    args: [baseSendParam],
+    chain: srcChain,
+  },
+  );
+  const oftReceipt = quoteOftResult[2];
+  const quotedAmountReceivedLD = oftReceipt.amountReceivedLD;
+
+  if (quotedAmountReceivedLD <= BigInt(0)) {
+    throw new Error("This OFT quote returned zero destination amount.");
+  }
+
+  const sendParam: LayerZeroOftV2SendParam = {
+    ...baseSendParam,
+    minAmountLD: quotedAmountReceivedLD,
+  };
+  const fee = await readContractForChain<LayerZeroMessagingFee>({
+    address: sourceDeployment.oftAddress as Address,
+    abi: layerZeroOftV2Abi,
+    functionName: "quoteSend",
+    args: [sendParam, false],
+    chain: srcChain,
+  });
+
+  let approvalRequired = sourceDeployment.approvalRequired ?? false;
+  let tokenAddress = sourceDeployment.tokenAddress ?? null;
+
+  try {
+    approvalRequired = await readContractForChain<boolean>({
+      address: sourceDeployment.oftAddress as Address,
+      abi: layerZeroOftV2Abi,
+      functionName: "approvalRequired",
+      chain: srcChain,
+    });
+  } catch {
+    approvalRequired = sourceDeployment.approvalRequired ?? false;
+  }
+
+  if (approvalRequired && !tokenAddress) {
+    try {
+      tokenAddress = await readContractForChain<Address>({
+        address: sourceDeployment.oftAddress as Address,
+        abi: layerZeroOftV2Abi,
+        functionName: "token",
+        chain: srcChain,
+      });
+    } catch {
+      tokenAddress = sourceDeployment.tokenAddress ?? null;
+    }
+  }
+
+  if (approvalRequired && !tokenAddress) {
+    throw new Error("This OFT requires approval, but the spend token address could not be resolved.");
+  }
+
+  const approvalTransaction =
+    approvalRequired && tokenAddress
+      ? buildCustomOftApprovalTransaction(tokenAddress, sourceDeployment.oftAddress, amount)
+      : null;
+  const populatedTransaction = buildCustomOftSendTransaction(
+    sourceDeployment.oftAddress,
+    sendParam,
+    fee,
+    from,
+  );
+
+  return {
+    userSteps: buildCustomOftUserSteps(srcChain, approvalTransaction, populatedTransaction),
+    quotedAmountReceivedLD,
+  };
 }
 
 function compareQuotes(left: BridgeQuote, right: BridgeQuote) {
@@ -1392,6 +1486,79 @@ function GitHubIcon({ className = "h-4 w-4" }: { className?: string }) {
       className={className}
     >
       <path d="M12 .5C5.648.5.5 5.648.5 12c0 5.084 3.292 9.399 7.86 10.92.575.106.786-.25.786-.556 0-.274-.01-1-.016-1.963-3.197.695-3.872-1.541-3.872-1.541-.523-1.329-1.277-1.683-1.277-1.683-1.044-.714.079-.7.079-.7 1.155.081 1.763 1.186 1.763 1.186 1.026 1.758 2.692 1.25 3.349.956.104-.743.402-1.25.731-1.538-2.552-.29-5.236-1.276-5.236-5.68 0-1.255.449-2.281 1.184-3.085-.119-.29-.513-1.457.113-3.038 0 0 .965-.309 3.162 1.178a10.986 10.986 0 0 1 5.758 0c2.195-1.487 3.158-1.178 3.158-1.178.628 1.581.234 2.748.115 3.038.737.804 1.182 1.83 1.182 3.085 0 4.415-2.688 5.386-5.248 5.67.413.355.781 1.058.781 2.133 0 1.54-.014 2.782-.014 3.16 0 .309.207.668.791.555C20.212 21.395 23.5 17.082 23.5 12 23.5 5.648 18.352.5 12 .5Z" />
+    </svg>
+  );
+}
+
+function SettingsIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function ArrowRightIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <path d="M5 12h14M12 5l7 7-7 7" />
+    </svg>
+  );
+}
+
+function LinkIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    </svg>
+  );
+}
+
+function ArrowDownIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <path d="M12 5v14M5 12l7 7 7-7" />
+    </svg>
+  );
+}
+
+function KeyIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <circle cx="7.5" cy="15.5" r="5.5" />
+      <path d="M21 2l-9.6 9.6M15.5 7.5l3 3" />
+    </svg>
+  );
+}
+
+function RefreshIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <polyline points="23 4 23 10 17 10" />
+      <polyline points="1 20 1 14 7 14" />
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+    </svg>
+  );
+}
+
+function SendIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <line x1="22" y1="2" x2="11" y2="13" />
+      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  );
+}
+
+function SwitchIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
+      <polyline points="17 1 21 5 17 9" />
+      <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+      <polyline points="7 23 3 19 7 15" />
+      <path d="M21 13v2a4 4 0 0 1-4 4H3" />
     </svg>
   );
 }
@@ -2044,12 +2211,12 @@ function CustomOftSetupModal({
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
-              Direct API
+              Local Build
             </p>
             <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">Custom OFT</h2>
             <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-              Configure OFT meshes to bridge directly via the LayerZero OFT API. Saved tokens
-              appear in the source token list.
+              Configure OFT meshes for local V2 transaction building. Saved tokens appear in the
+              source token list.
             </p>
           </div>
           <button
@@ -2194,6 +2361,8 @@ export function BridgeApp() {
     useState<CustomOftConfigDraft | null>(null);
   const [customOftConfigError, setCustomOftConfigError] = useState<string | null>(null);
   const [isOftDiscoveryModalOpen, setIsOftDiscoveryModalOpen] = useState(false);
+  const [fallbackEvmBalanceValue, setFallbackEvmBalanceValue] = useState<bigint | undefined>();
+  const [isFallbackEvmBalanceLoading, setIsFallbackEvmBalanceLoading] = useState(false);
   const customOftImportInputRef = useRef<HTMLInputElement | null>(null);
   const balanceSwitchAttemptRef = useRef<string | null>(null);
   const notificationTimeoutsRef = useRef(new Map<string, number>());
@@ -2258,7 +2427,7 @@ export function BridgeApp() {
     [chainByKey, dstChainKey],
   );
   const customOftSourceChains = useMemo(
-    () => supportedChains.filter((chain) => isCustomOftSupportedSourceChainType(chain.chainType)),
+    () => supportedChains.filter((chain) => isLocalCustomOftSourceChainSupported(chain.chainType)),
     [supportedChains],
   );
   const selectedCustomOftConfig = useMemo(
@@ -2274,7 +2443,10 @@ export function BridgeApp() {
       selectedCustomOftDeployments.flatMap((deployment) => {
         const chain = chainByKey.get(deployment.chainKey);
 
-        return chain && isCustomOftSupportedSourceChainType(chain.chainType) ? [chain] : [];
+        return chain &&
+          isLocalCustomOftSourceChainSupported(chain.chainType)
+          ? [chain]
+          : [];
       }),
     [chainByKey, selectedCustomOftDeployments],
   );
@@ -2287,7 +2459,10 @@ export function BridgeApp() {
 
         const chain = chainByKey.get(deployment.chainKey);
 
-        return chain ? [chain] : [];
+        return chain &&
+          isLocalCustomOftDestinationChainSupported(chain.chainType, chain.chainKey)
+          ? [chain]
+          : [];
       }),
     [chainByKey, selectedCustomOftDeployments, selectedCustomOftSrcChainKey],
   );
@@ -2467,7 +2642,8 @@ export function BridgeApp() {
   const isLayerZeroFallback = tokenDisplaySource === "layerzero" && !hasLayerZeroApiKey;
   const sourceChainType = activeSrcChain?.chainType;
   const destinationChainType = activeDstChain?.chainType;
-  const sourceChainUsesEvmWallet =
+  const sourceChainUsesEvmWallet = sourceChainType === "EVM";
+  const sourceChainHasConfiguredWallet =
     sourceChainType === "EVM" &&
     Boolean(activeSrcChain && activeSrcChain.chainKey in walletChainByKey);
   const activeExternalWalletSession = sourceChainType
@@ -2804,14 +2980,18 @@ export function BridgeApp() {
       chainId === activeSrcChain.chainId &&
       isConnected,
   );
-  const supportedSrcChainId = activeSrcChain?.chainId as SupportedChainId | undefined;
+  const supportedSrcChainId = sourceChainHasConfiguredWallet
+    ? (activeSrcChain?.chainId as SupportedChainId | undefined)
+    : undefined;
 
   const nativeBalanceQuery = useBalance({
     address: address as Address | undefined,
     chainId: supportedSrcChainId,
     query: {
       enabled:
-        balanceEnabled && Boolean(activeBalanceToken && isNativeToken(activeBalanceToken.address)),
+        balanceEnabled &&
+        sourceChainHasConfiguredWallet &&
+        Boolean(activeBalanceToken && isNativeToken(activeBalanceToken.address)),
       staleTime: 15 * 1000,
       refetchOnWindowFocus: false,
     },
@@ -2829,21 +3009,73 @@ export function BridgeApp() {
     query: {
       enabled:
         balanceEnabled &&
+        sourceChainHasConfiguredWallet &&
         Boolean(activeBalanceToken && !isNativeToken(activeBalanceToken.address)),
       staleTime: 15 * 1000,
       refetchOnWindowFocus: false,
     },
   });
 
-  const selectedBalanceValue =
-    activeBalanceToken && isNativeToken(activeBalanceToken.address)
-      ? nativeBalanceQuery.data?.value
-      : erc20BalanceQuery.data;
+  useEffect(() => {
+    if (
+      !balanceEnabled ||
+      sourceChainHasConfiguredWallet ||
+      !activeBalanceToken ||
+      !address
+    ) {
+      setFallbackEvmBalanceValue(undefined);
+      setIsFallbackEvmBalanceLoading(false);
+      return;
+    }
 
-  const isBalanceLoading =
-    activeBalanceToken && isNativeToken(activeBalanceToken.address)
+    let isCancelled = false;
+    setIsFallbackEvmBalanceLoading(true);
+
+    void fetchInjectedEvmBalance({
+      account: address as Address,
+      tokenAddress: isNativeToken(activeBalanceToken.address)
+        ? null
+        : (activeBalanceToken.address as Address),
+    })
+      .then((value) => {
+        if (isCancelled) {
+          return;
+        }
+
+        setFallbackEvmBalanceValue(value);
+      })
+      .catch(() => {
+        if (isCancelled) {
+          return;
+        }
+
+        setFallbackEvmBalanceValue(undefined);
+      })
+      .finally(() => {
+        if (isCancelled) {
+          return;
+        }
+
+        setIsFallbackEvmBalanceLoading(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeBalanceToken, address, balanceEnabled, sourceChainHasConfiguredWallet]);
+
+  const selectedBalanceValue =
+    sourceChainHasConfiguredWallet
+      ? activeBalanceToken && isNativeToken(activeBalanceToken.address)
+        ? nativeBalanceQuery.data?.value
+        : erc20BalanceQuery.data
+      : fallbackEvmBalanceValue;
+
+  const isBalanceLoading = sourceChainHasConfiguredWallet
+    ? activeBalanceToken && isNativeToken(activeBalanceToken.address)
       ? nativeBalanceQuery.isPending
-      : erc20BalanceQuery.isPending;
+      : erc20BalanceQuery.isPending
+    : isFallbackEvmBalanceLoading;
 
   const balanceCopy = useMemo(() => {
     if (!activeBalanceToken) {
@@ -2888,6 +3120,98 @@ export function BridgeApp() {
     sourceWalletLabel,
     walletConnectButtonCopy,
   ]);
+
+  async function switchEvmChain(chain: BridgeChain) {
+    if (chain.chainType !== "EVM") {
+      throw new Error("Expected an EVM chain.");
+    }
+
+    if (chain.chainKey in walletChainByKey) {
+      await switchChainAsync({ chainId: chain.chainId as SupportedChainId });
+      return;
+    }
+
+    await switchInjectedEvmChain(chain.chainId, chain.shortName);
+  }
+
+  async function readEvmContractForChain<T>({
+    abi,
+    address,
+    args,
+    chain,
+    functionName,
+  }: {
+    abi: Abi;
+    address: Address;
+    args?: readonly unknown[];
+    chain: BridgeChain;
+    functionName: string;
+  }) {
+    if (chain.chainType !== "EVM") {
+      throw new Error("Expected an EVM chain.");
+    }
+
+    if (chain.chainKey in walletChainByKey) {
+      return (await readContract(wagmiConfig, {
+        address,
+        abi,
+        functionName,
+        args,
+        chainId: chain.chainId as SupportedChainId,
+      })) as T;
+    }
+
+    return readInjectedEvmContract<T>({
+      address,
+      abi,
+      functionName,
+      args,
+    });
+  }
+
+  async function sendEvmTransactionForChain(
+    chain: BridgeChain,
+    transaction: {
+      data?: Hex;
+      from: Address;
+      gas?: bigint;
+      to: Address;
+      value?: bigint;
+    },
+  ) {
+    if (chain.chainType !== "EVM") {
+      throw new Error("Expected an EVM chain.");
+    }
+
+    if (chain.chainKey in walletChainByKey) {
+      return sendTransaction(wagmiConfig, {
+        account: transaction.from,
+        chainId: chain.chainId as SupportedChainId,
+        to: transaction.to,
+        data: transaction.data,
+        value: transaction.value ?? BigInt(0),
+        gas: transaction.gas,
+      });
+    }
+
+    return sendInjectedEvmTransaction(transaction);
+  }
+
+  async function waitForEvmTransaction(chain: BridgeChain, hash: string) {
+    if (chain.chainType !== "EVM") {
+      throw new Error("Expected an EVM chain.");
+    }
+
+    if (chain.chainKey in walletChainByKey) {
+      await waitForTransactionReceipt(wagmiConfig, {
+        chainId: chain.chainId as SupportedChainId,
+        hash: hash as Hex,
+      });
+      return;
+    }
+
+    await waitForInjectedEvmTransactionReceipt(hash);
+  }
 
   function dismissExecutionNotification(notificationId: string) {
     const timeoutId = notificationTimeoutsRef.current.get(notificationId);
@@ -3017,15 +3341,6 @@ export function BridgeApp() {
     setCustomOftConfigDraft({
       json: createCustomOftJsonTemplate(defaultSourceChainKey, defaultDestinationChainKey),
     });
-    setCustomOftConfigError(null);
-  }
-
-  function openEditCustomOftConfig() {
-    if (!selectedCustomOftConfig) {
-      return;
-    }
-
-    setCustomOftConfigDraft(toCustomOftConfigDraft(selectedCustomOftConfig));
     setCustomOftConfigError(null);
   }
 
@@ -3471,7 +3786,14 @@ export function BridgeApp() {
     }
 
     balanceSwitchAttemptRef.current = attemptKey;
-    void switchChainAsync({ chainId: activeSrcChain.chainId as SupportedChainId }).catch(
+    if (activeSrcChain.chainKey in walletChainByKey) {
+      void switchChainAsync({ chainId: activeSrcChain.chainId as SupportedChainId }).catch(
+        () => undefined,
+      );
+      return;
+    }
+
+    void switchInjectedEvmChain(activeSrcChain.chainId, activeSrcChain.shortName).catch(
       () => undefined,
     );
   }, [
@@ -3744,7 +4066,7 @@ export function BridgeApp() {
             title: "Switch network",
             message: `Move wallet to ${srcChain.shortName} to continue.`,
           });
-          await switchChainAsync({ chainId: srcChain.chainId as SupportedChainId });
+          await switchEvmChain(srcChain);
         }
 
         for (const [index, step] of resolvedUserSteps.entries()) {
@@ -3759,9 +4081,8 @@ export function BridgeApp() {
               currentStep: step.description ?? `Sending transaction step ${index + 1}`,
             });
 
-            const hash = await sendTransaction(wagmiConfig, {
-              account: address as Address,
-              chainId: srcChain.chainId as SupportedChainId,
+            const hash = await sendEvmTransactionForChain(srcChain, {
+              from: address as Address,
               to: payload.to as Address,
               data: payload.data,
               value: payload.value ? BigInt(payload.value) : BigInt(0),
@@ -3783,10 +4104,7 @@ export function BridgeApp() {
               message: hash,
             });
 
-            await waitForTransactionReceipt(wagmiConfig, {
-              chainId: srcChain.chainId as SupportedChainId,
-              hash,
-            });
+            await waitForEvmTransaction(srcChain, hash);
 
             updateExecutionHistoryItem(historyId, {
               currentStep: "Transaction confirmed",
@@ -4013,7 +4331,14 @@ export function BridgeApp() {
     if (!customOftRuntimeSourceChains.length) {
       return {
         ready: false,
-        reason: "This mesh has no executable EVM or Solana source deployment in this build.",
+        reason: "This mesh has no executable local EVM source deployment in this build.",
+      } as const;
+    }
+
+    if (!customOftRuntimeDestinationChains.length) {
+      return {
+        ready: false,
+        reason: "This mesh has no executable local EVM destination deployment in this build.",
       } as const;
     }
 
@@ -4032,11 +4357,11 @@ export function BridgeApp() {
     }
 
     if (
-      !isCustomOftSupportedSourceChainType(customOftSrcChain.chainType)
+      !isLocalCustomOftSourceChainSupported(customOftSrcChain.chainType)
     ) {
       return {
         ready: false,
-        reason: "Custom OFT mode currently supports EVM and Solana source chains only.",
+        reason: "Local custom OFT execution currently supports EVM source chains only.",
       } as const;
     }
 
@@ -4047,10 +4372,22 @@ export function BridgeApp() {
       } as const;
     }
 
-    if (!hasLayerZeroApiKey) {
+    if (
+      !isLocalCustomOftDestinationChainSupported(
+        customOftDstChain.chainType,
+        customOftDstChain.chainKey,
+      )
+    ) {
       return {
         ready: false,
-        reason: "Add a LayerZero API key to use custom OFT mode.",
+        reason: "Local custom OFT execution currently supports EVM destination chains only.",
+      } as const;
+    }
+
+    if (!isSupportedCustomOftEndpointVersion(selectedCustomOftConfig.endpointVersion)) {
+      return {
+        ready: false,
+        reason: "Local custom OFT execution currently supports Endpoint V2 meshes only.",
       } as const;
     }
 
@@ -4097,9 +4434,9 @@ export function BridgeApp() {
     amountInput,
     customOftDstChain,
     customOftSrcChain,
+    customOftRuntimeDestinationChains.length,
     customOftRuntimeSourceChains.length,
     destinationAddress,
-    hasLayerZeroApiKey,
     selectedCustomOftConfig,
     selectedCustomOftDestinationDeployment,
     selectedCustomOftSourceDeployment,
@@ -4142,7 +4479,7 @@ export function BridgeApp() {
       expectedDstAmount: `${amountInput || "0"} ${customOftDestinationTokenSymbol}`,
       minimumDstAmount: null,
       destinationAddress,
-      currentStep: "Building LayerZero OFT transaction",
+      currentStep: "Building local OFT transaction",
     };
 
     prependExecutionHistoryItem(initialHistoryItem);
@@ -4157,78 +4494,74 @@ export function BridgeApp() {
     });
 
     try {
-      const transferResponse = await fetchJson<LayerZeroOftTransferResponse>(
-        "/api/bridge/oft-transfer",
-        {
-          method: "POST",
-          headers: getBridgeApiRequestHeaders("layerzero", layerZeroApiKey),
-          body: JSON.stringify(customOftRequestState.payload),
-        },
-      );
-      const userSteps = buildCustomOftUserSteps(
-        customOftSrcChain,
-        transferResponse.transactionData,
-      );
+      if (!address) {
+        throw new Error("Connect an EVM wallet before executing this OFT.");
+      }
+
+      if (chainId !== customOftSrcChain.chainId) {
+        updateExecutionHistoryItem(historyId, {
+          currentStep: `Switching wallet to ${customOftSrcChain.shortName}`,
+        });
+        await switchEvmChain(customOftSrcChain);
+      }
+
+      const { quotedAmountReceivedLD, userSteps } = await buildLocalCustomOftTransfer({
+        config: selectedCustomOftConfig,
+        srcChain: customOftSrcChain,
+        dstChain: customOftDstChain,
+        sourceDeployment: selectedCustomOftSourceDeployment,
+        amount: BigInt(customOftRequestState.payload.amount),
+        from: customOftRequestState.payload.from,
+        to: customOftRequestState.payload.to,
+        readContractForChain: readEvmContractForChain,
+      });
+      const quotedDestinationAmountLabel = `${formatTokenAmount(
+        quotedAmountReceivedLD.toString(),
+        selectedCustomOftDestinationDeployment.decimals,
+      )} ${customOftDestinationTokenSymbol}`;
+
+      updateExecutionHistoryItem(historyId, {
+        currentStep: "Local OFT transaction ready",
+        expectedDstAmount: quotedDestinationAmountLabel,
+        minimumDstAmount: quotedDestinationAmountLabel,
+      });
+
       let lastTxHash: string | undefined;
 
-      if (customOftSrcChain.chainType === "EVM") {
-        if (!address) {
-          throw new Error("Connect an EVM wallet before executing this OFT.");
+      for (const [index, step] of userSteps.entries()) {
+        if (!isTransactionStep(step)) {
+          throw new Error(`Unsupported custom OFT step ${index + 1}.`);
         }
 
-        if (chainId !== customOftSrcChain.chainId) {
-          updateExecutionHistoryItem(historyId, {
-            currentStep: `Switching wallet to ${customOftSrcChain.shortName}`,
-          });
-          await switchChainAsync({
-            chainId: customOftSrcChain.chainId as SupportedChainId,
-          });
+        const payload = step.transaction?.encoded;
+
+        if (!payload?.to) {
+          throw new Error(`Custom OFT step ${index + 1} is missing transaction payload.`);
         }
 
-        for (const [index, step] of userSteps.entries()) {
-          if (!isTransactionStep(step)) {
-            throw new Error(`Unsupported custom OFT step ${index + 1}.`);
-          }
-
-          const payload = step.transaction?.encoded;
-
-          if (!payload?.to) {
-            throw new Error(`Custom OFT step ${index + 1} is missing transaction payload.`);
-          }
-
-          updateExecutionHistoryItem(historyId, {
-            currentStep: step.description ?? `Sending transaction step ${index + 1}`,
-          });
-
-          const hash = await sendTransaction(wagmiConfig, {
-            account: address as Address,
-            chainId: customOftSrcChain.chainId as SupportedChainId,
-            to: payload.to as Address,
-            data: payload.data,
-            value: payload.value ? BigInt(payload.value) : BigInt(0),
-            gas: payload.gasLimit ? BigInt(payload.gasLimit) : undefined,
-          });
-
-          lastTxHash = hash;
-          setExecutionState((current) => ({
-            ...current,
-            txHash: hash,
-          }));
-          updateExecutionHistoryItem(historyId, {
-            txHash: hash,
-            currentStep: "Transaction submitted",
-          });
-
-          await waitForTransactionReceipt(wagmiConfig, {
-            chainId: customOftSrcChain.chainId as SupportedChainId,
-            hash,
-          });
-        }
-      } else {
         updateExecutionHistoryItem(historyId, {
-          currentStep: `Submitting ${getChainTypeDisplayLabel(customOftSrcChain.chainType)} transaction`,
+          currentStep: step.description ?? `Sending transaction step ${index + 1}`,
         });
-        lastTxHash = await bridgeWallets.executeUserSteps(customOftSrcChain.chainType, userSteps);
+
+        const hash = await sendEvmTransactionForChain(customOftSrcChain, {
+          from: address as Address,
+          to: payload.to as Address,
+          data: payload.data,
+          value: payload.value ? BigInt(payload.value) : BigInt(0),
+          gas: payload.gasLimit ? BigInt(payload.gasLimit) : undefined,
+        });
+
+        lastTxHash = hash;
+        setExecutionState((current) => ({
+          ...current,
+          txHash: hash,
+        }));
+        updateExecutionHistoryItem(historyId, {
+          txHash: hash,
+          currentStep: "Transaction submitted",
+        });
+
+        await waitForEvmTransaction(customOftSrcChain, hash);
       }
 
       const explorerUrl = getLayerZeroScanUrl(lastTxHash);
@@ -4325,7 +4658,9 @@ export function BridgeApp() {
   const tokenDisplaySourceLabel =
     tokenDisplaySource === "stargate" ? "Stargate" : "LayerZero";
   const tokenDisplaySourceSubcopy =
-    tokenDisplaySource === "stargate"
+    isCustomOftSource
+      ? "Local OFT build"
+      : tokenDisplaySource === "stargate"
       ? "VT wrapper"
       : hasLayerZeroApiKey
         ? "Direct API · key ready"
@@ -4337,9 +4672,7 @@ export function BridgeApp() {
     : bridgeWallets.isPending;
   const providerNoticeCopy =
     isCustomOftSource
-      ? !hasLayerZeroApiKey
-        ? "Custom OFT mode requires a LayerZero API key."
-        : customOftRequestState.reason
+      ? customOftRequestState.reason
       : isLayerZeroFallback
         ? "LayerZero key not provided. Falling back to Stargate v2 until you add one."
         : null;
@@ -4479,10 +4812,15 @@ export function BridgeApp() {
                 <button
                   type="button"
                   onClick={() => setIsCustomOftSetupModalOpen(true)}
-                  className="group inline-flex items-center gap-3 rounded-[1.05rem] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-3 py-2 text-left transition hover:border-white/24 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05))]"
+                  title={customOftConfigs.length ? `${customOftConfigs.length} custom OFT config(s)` : "Add custom OFT config"}
+                  className={`group inline-flex items-center gap-2 rounded-[1.05rem] border px-3 py-2 text-left transition ${
+                    isCustomOftSource
+                      ? "border-white/30 bg-white/[0.08] hover:bg-white/[0.12]"
+                      : "border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] hover:border-white/24 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05))]"
+                  }`}
                 >
                   <span
-                    className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold uppercase tracking-[0.18em] transition ${
+                    className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold uppercase tracking-[0.14em] transition ${
                       isCustomOftSource
                         ? "border-white bg-white text-black"
                         : "border-white/14 bg-black text-white"
@@ -4491,11 +4829,11 @@ export function BridgeApp() {
                     OFT
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-[9px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)] transition group-hover:text-white/60">
-                      Custom OFT
+                    <span className="block text-[9px] font-semibold uppercase tracking-[0.22em] text-[var(--muted)] transition group-hover:text-white/60">
+                      Custom
                     </span>
-                    <span className="text-xs font-medium text-white">
-                      {customOftConfigs.length ? `${customOftConfigs.length} saved` : "Add config"}
+                    <span className="text-[11px] font-medium text-white">
+                      {customOftConfigs.length ? customOftConfigs.length : "+"}
                     </span>
                   </span>
                 </button>
@@ -4504,10 +4842,10 @@ export function BridgeApp() {
                   onClick={handleToggleRouteSource}
                   aria-label={tokenDisplaySourceNextLabel}
                   title={tokenDisplaySourceNextLabel}
-                  className="group inline-flex items-center gap-3 rounded-[1.05rem] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-3 py-2 text-left transition hover:border-white/24 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05))]"
+                  className="group inline-flex items-center gap-2 rounded-[1.05rem] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-3 py-2 text-left transition hover:border-white/24 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05))]"
                 >
                   <span
-                    className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold uppercase tracking-[0.18em] transition ${
+                    className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold uppercase tracking-[0.14em] transition ${
                       tokenDisplaySource === "stargate"
                         ? "border-white bg-white text-black"
                         : "border-white/14 bg-black text-white"
@@ -4516,21 +4854,14 @@ export function BridgeApp() {
                     {tokenDisplaySource === "stargate" ? "SG" : "L0"}
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-[9px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)] transition group-hover:text-white/60">
-                      Route Source
+                    <span className="block text-[9px] font-semibold uppercase tracking-[0.22em] text-[var(--muted)] transition group-hover:text-white/60">
+                      Source
                     </span>
-                    <span className="mt-0.5 flex items-center gap-2">
-                      <span className="text-xs font-medium text-white">
-                        {tokenDisplaySourceLabel}
-                      </span>
-                      <span className="text-[10px] text-[var(--muted)]">
-                        {tokenDisplaySourceSubcopy}
-                      </span>
+                    <span className="text-[11px] font-medium text-white">
+                      {tokenDisplaySourceLabel}
                     </span>
                   </span>
-                  <span className="inline-flex h-7 items-center rounded-full border border-white/10 bg-black px-2.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/72 transition group-hover:border-white/20 group-hover:text-white">
-                    Switch
-                  </span>
+                  <SwitchIcon className="h-3.5 w-3.5 shrink-0 text-white/40 transition group-hover:text-white/70" />
                 </button>
                 {executionState.transferStatus ? (
                   <StatusPill tone={executionTone}>{executionState.transferStatus}</StatusPill>
@@ -4618,14 +4949,15 @@ export function BridgeApp() {
                         </p>
                         <p className="mt-1 text-sm font-medium text-white">Destination</p>
                       </div>
-                      <div className="text-right">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
-                          Receive
-                        </p>
-                        <p className="mt-1.5 text-[1.65rem] font-medium tracking-[-0.05em] text-white">
+                      <div className="min-w-0 text-right">
+                        <div className="flex items-center justify-end gap-1 text-[var(--muted)]">
+                          <ArrowDownIcon className="h-2.5 w-2.5" />
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.28em]">Receive</p>
+                        </div>
+                        <p className="mt-1 truncate text-lg font-medium tracking-[-0.04em] text-white">
                           {isCustomOftSource ? customOftDestinationPreviewAmount : destinationPreviewAmount}
                         </p>
-                        <p className="text-sm text-[var(--muted)]">
+                        <p className="text-xs text-[var(--muted)]">
                           <InlineAssetLabel
                             label={isCustomOftSource ? customOftDestinationTokenSymbol : selectedDstTokenSymbol}
                             src={isCustomOftSource ? customOftDestinationTokenIconUrl : selectedDstTokenIconUrl}
@@ -4725,18 +5057,22 @@ export function BridgeApp() {
                       <button
                         type="button"
                         onClick={openLayerZeroApiKeyModal}
-                        className="inline-flex items-center justify-center whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] px-4 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08]"
+                        title="Set LayerZero API key"
+                        className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08]"
                       >
-                        API Key
+                        <KeyIcon className="h-3.5 w-3.5" />
+                        <span>API Key</span>
                       </button>
                     ) : (
                       <button
                         type="button"
                         onClick={() => void handleRequestQuote("manual")}
                         disabled={!canRequestQuote || isQuoting}
-                        className="inline-flex items-center justify-center whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] px-4 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                        title={refreshButtonCopy}
+                        className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        {refreshButtonCopy}
+                        <RefreshIcon className={`h-3.5 w-3.5 ${isQuoting ? "animate-spin" : ""}`} />
+                        <span>{isQuoting ? "Quoting" : "Quote"}</span>
                       </button>
                     )}
                     <button
@@ -4745,9 +5081,10 @@ export function BridgeApp() {
                         isCustomOftSource ? void handleExecuteCustomOft() : void handleExecuteQuote()
                       }
                       disabled={isCustomOftSource ? !canExecuteCustomOft : !canExecuteQuote}
-                      className="inline-flex items-center justify-center whitespace-nowrap rounded-full bg-white px-4 py-2 text-xs font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-white px-4 py-2 text-xs font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {executionState.phase === "running" ? "Executing..." : "Execute"}
+                      <SendIcon className="h-3.5 w-3.5" />
+                      <span>{executionState.phase === "running" ? "Executing..." : "Execute"}</span>
                     </button>
                   </div>
                 </div>
@@ -4771,7 +5108,7 @@ export function BridgeApp() {
                 {!isCustomOftSource && quote ? (
                   <StatusPill tone="neutral">{availableQuoteCount} route(s)</StatusPill>
                 ) : isCustomOftSource && selectedCustomOftConfig ? (
-                  <StatusPill tone="neutral">Direct API</StatusPill>
+                  <StatusPill tone="neutral">Local</StatusPill>
                 ) : null}
               </div>
 
@@ -4830,13 +5167,12 @@ export function BridgeApp() {
 
                           <div className="mt-3 flex items-end justify-between gap-3">
                             <div>
-                              <p
-                                className={`text-[10px] font-semibold uppercase tracking-[0.2em] ${
-                                  isSelected ? "text-black/66" : "text-[var(--muted)]"
-                                }`}
-                              >
-                                Receive
-                              </p>
+                              <div className={`flex items-center gap-1 ${isSelected ? "text-black/66" : "text-[var(--muted)]"}`}>
+                                <ArrowDownIcon className="h-2.5 w-2.5" />
+                                <p className="text-[10px] font-semibold uppercase tracking-[0.2em]">
+                                  Receive
+                                </p>
+                              </div>
                               <p className="mt-1 text-base font-medium tracking-[-0.03em]">
                                 <InlineAssetLabel
                                   label={selectedDstTokenSymbol}
@@ -4847,13 +5183,15 @@ export function BridgeApp() {
                                 </InlineAssetLabel>
                               </p>
                             </div>
-                            <p
-                              className={`text-xs ${
-                                isSelected ? "text-black/66" : "text-[var(--muted)]"
+                            <span
+                              className={`inline-flex h-6 w-6 items-center justify-center rounded-full border text-[10px] font-semibold ${
+                                isSelected
+                                  ? "border-black/12 bg-black/10 text-black/72"
+                                  : "border-white/10 bg-black/40 text-white/50"
                               }`}
                             >
-                              Option {index + 1}
-                            </p>
+                              {index + 1}
+                            </span>
                           </div>
                         </button>
                       );
@@ -4862,63 +5200,73 @@ export function BridgeApp() {
                 </div>
               ) : isCustomOftSource ? (
                 selectedCustomOftConfig ? (
-                  <div className="mt-4 flex min-h-0 flex-1 flex-col gap-3">
-                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                        Config
+                  <div className="mt-4 flex min-h-0 flex-1 flex-col gap-2 overflow-auto pr-1">
+                    <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
+                      <div className="flex items-center gap-1.5 text-[var(--muted)]">
+                        <SettingsIcon className="h-3 w-3 shrink-0" />
+                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Config</p>
+                      </div>
+                      <p className="mt-1.5 text-sm font-medium text-white">
+                        {selectedCustomOftConfig.name}
+                        <span className="ml-1.5 text-xs font-normal text-[var(--muted)]">{selectedCustomOftConfig.symbol}</span>
                       </p>
-                      <p className="mt-2 text-sm font-medium text-white">
-                        {selectedCustomOftConfig.name} · {selectedCustomOftConfig.symbol}
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--muted)]">
-                        {selectedCustomOftDeployments.length} chains ·{" "}
-                        {customOftRuntimeSourceChains.length} executable source chain(s)
-                      </p>
-                    </div>
-                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                        Route
-                      </p>
-                      <p className="mt-2 text-sm text-white">
-                        {customOftSrcChain?.shortName ?? "Select source"} to{" "}
-                        {customOftDstChain?.shortName ?? "Select destination"}
+                      <p className="mt-0.5 text-xs text-[var(--muted)]">
+                        {selectedCustomOftDeployments.length} chains · {customOftRuntimeSourceChains.length} src
                       </p>
                     </div>
-                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                        Source OFT
-                      </p>
-                      <p className="mt-2 break-all text-sm text-white">
-                        {selectedCustomOftSourceDeployment?.oftAddress ?? "Select a source chain"}
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--muted)]">
-                        {selectedCustomOftSourceDeployment
-                          ? `${selectedCustomOftSourceDeployment.decimals} decimals${
-                              selectedCustomOftSourceDeployment.approvalRequired
-                                ? " · approval required"
-                                : ""
-                            }`
-                          : "Approval and send calldata are built from this selected deployment."}
-                      </p>
-                    </div>
-                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                        Destination OFT
-                      </p>
-                      <p className="mt-2 break-all text-sm text-white">
-                        {selectedCustomOftDestinationDeployment?.oftAddress ??
-                          "Select a destination chain"}
+                    <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
+                      <div className="flex items-center gap-1.5 text-[var(--muted)]">
+                        <ArrowRightIcon className="h-3 w-3 shrink-0" />
+                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Route</p>
+                      </div>
+                      <p className="mt-1.5 flex items-center gap-1.5 text-sm text-white">
+                        <span>{customOftSrcChain ? (
+                          <InlineAssetLabel label={customOftSrcChain.shortName} src={getStargateChainIconUrl(customOftSrcChain.chainKey)} size="xs">
+                            {customOftSrcChain.shortName}
+                          </InlineAssetLabel>
+                        ) : <span className="text-[var(--muted)]">Select source</span>}</span>
+                        <ArrowRightIcon className="h-3 w-3 shrink-0 text-[var(--muted)]" />
+                        <span>{customOftDstChain ? (
+                          <InlineAssetLabel label={customOftDstChain.shortName} src={getStargateChainIconUrl(customOftDstChain.chainKey)} size="xs">
+                            {customOftDstChain.shortName}
+                          </InlineAssetLabel>
+                        ) : <span className="text-[var(--muted)]">Select dest</span>}</span>
                       </p>
                     </div>
-                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                        Receive
+                    <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
+                      <div className="flex items-center gap-1.5 text-[var(--muted)]">
+                        <LinkIcon className="h-3 w-3 shrink-0" />
+                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Src OFT</p>
+                        {selectedCustomOftSourceDeployment?.approvalRequired ? (
+                          <span className="ml-auto rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.2em] text-white/50">Approval</span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1.5 break-all font-mono text-[11px] leading-5 text-white/84">
+                        {selectedCustomOftSourceDeployment?.oftAddress ?? <span className="font-sans text-xs text-[var(--muted)]">Select a source chain</span>}
                       </p>
-                      <p className="mt-2 text-sm text-white">
-                        {customOftDestinationPreviewAmount} {customOftDestinationTokenSymbol}
+                      {selectedCustomOftSourceDeployment ? (
+                        <p className="mt-0.5 text-[10px] text-[var(--muted)]">{selectedCustomOftSourceDeployment.decimals} decimals</p>
+                      ) : null}
+                    </div>
+                    <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
+                      <div className="flex items-center gap-1.5 text-[var(--muted)]">
+                        <LinkIcon className="h-3 w-3 shrink-0" />
+                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Dst OFT</p>
+                      </div>
+                      <p className="mt-1.5 break-all font-mono text-[11px] leading-5 text-white/84">
+                        {selectedCustomOftDestinationDeployment?.oftAddress ?? <span className="font-sans text-xs text-[var(--muted)]">Select a destination chain</span>}
                       </p>
-                      <p className="mt-1 text-xs text-[var(--muted)]">
-                        Approval and send calldata are built just-in-time from LayerZero OFT API.
+                    </div>
+                    <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
+                      <div className="flex items-center gap-1.5 text-[var(--muted)]">
+                        <ArrowDownIcon className="h-3 w-3 shrink-0" />
+                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Receive</p>
+                      </div>
+                      <p className="mt-1.5 text-sm font-medium text-white">
+                        {customOftDestinationPreviewAmount}
+                        {customOftDestinationTokenSymbol ? (
+                          <span className="ml-1.5 text-xs font-normal text-[var(--muted)]">{customOftDestinationTokenSymbol}</span>
+                        ) : null}
                       </p>
                     </div>
                   </div>
@@ -4998,9 +5346,7 @@ export function BridgeApp() {
                                 </InlineAssetLabel>
                               </p>
                             </div>
-                            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                              to
-                            </span>
+                            <ArrowRightIcon className="h-3 w-3 shrink-0 text-[var(--muted)]" />
                             <div className="min-w-0 text-right">
                               <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
                                 Receive
@@ -5021,7 +5367,7 @@ export function BridgeApp() {
                             >
                               {item.srcChainName}
                             </InlineAssetLabel>
-                            <span>to</span>
+                            <ArrowRightIcon className="h-2.5 w-2.5" />
                             <InlineAssetLabel
                               label={item.dstChainName}
                               src={item.dstChainIconUrl}
