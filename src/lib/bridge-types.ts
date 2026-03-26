@@ -137,3 +137,46 @@ export interface BridgeStatusResponse {
   substatus?: string;
   error?: string;
 }
+
+export interface CustomOftDeployment {
+  chainKey: string;
+  oftAddress: string;
+  tokenAddress?: string;
+  decimals: number;
+  approvalRequired?: boolean;
+  type?: string;
+}
+
+export interface CustomOftConfig {
+  id: string;
+  name: string;
+  symbol: string;
+  endpointVersion?: string;
+  deployments: Record<string, CustomOftDeployment>;
+}
+
+export interface LayerZeroOftTransferResponse {
+  transactionData?: {
+    populatedTransaction?: TransactionPayload | string;
+    approvalTransaction?: TransactionPayload | null;
+  };
+}
+
+export interface LayerZeroOftListDeployment {
+  address: string;
+  localDecimals?: number;
+  sharedDecimals?: number;
+  innerTokenAddress?: string;
+  approvalRequired?: boolean;
+  type?: string;
+}
+
+export interface LayerZeroOftListEntry {
+  name?: string;
+  symbol?: string;
+  sharedDecimals?: number;
+  endpointVersion?: string;
+  deployments?: Record<string, LayerZeroOftListDeployment>;
+}
+
+export type LayerZeroOftListResponse = Record<string, LayerZeroOftListEntry[]>;

@@ -1,4 +1,5 @@
 const VT_API_BASE = "https://transfer.layerzero-api.com/v1";
+const OFT_API_BASE = "https://metadata.layerzero-api.com/v1/metadata/experiment/ofts";
 const STARGATE_API_BASE = "https://stargate.finance/api/vt";
 const STARGATE_V2_API_BASE = "https://stargate.finance/api/v2";
 const STARGATE_WEB_API_BASE = "https://stargate.finance/api";
@@ -9,6 +10,7 @@ type ProxyOptions = {
   baseUrl?: string;
   defaultHeaders?: HeadersInit;
   apiKey?: string | null;
+  apiKeyHeader?: string;
 };
 
 function getApiKey(apiKeyOverride?: string | null) {
@@ -31,6 +33,18 @@ export async function fetchLayerZeroJson(
   return fetchBridgeJson(path, init, {
     ...options,
     baseUrl: VT_API_BASE,
+  });
+}
+
+export async function fetchLayerZeroOftJson(
+  path: string,
+  init?: RequestInit,
+  options: ProxyOptions = {},
+) {
+  return fetchBridgeJson(path, init, {
+    ...options,
+    baseUrl: OFT_API_BASE,
+    apiKeyHeader: "x-layerzero-api-key",
   });
 }
 
@@ -87,7 +101,7 @@ async function fetchBridgeJson(
   }
 
   if (options.includeApiKey) {
-    headers.set("x-api-key", getApiKey(options.apiKey));
+    headers.set(options.apiKeyHeader ?? "x-api-key", getApiKey(options.apiKey));
   }
 
   const response = await fetch(`${options.baseUrl ?? VT_API_BASE}${path}`, {

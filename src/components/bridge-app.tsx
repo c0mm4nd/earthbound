@@ -19,25 +19,35 @@ import {
 } from "wagmi";
 import {
   startTransition,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type FormEvent,
   type ReactNode,
 } from "react";
 import type {
   BridgeApiProvider,
   BridgeChain,
+  BridgeChainType,
   BridgeQuote,
   BridgeQuoteResponse,
   BridgeStatusResponse,
   BridgeToken,
   BuildUserStepsResponse,
+  CustomOftConfig,
+  CustomOftDeployment,
+  LayerZeroOftListEntry,
+  LayerZeroOftTransferResponse,
+  LayerZeroOftListDeployment,
+  LayerZeroOftListResponse,
   QuoteFee,
   QuoteUserStep,
   SignatureUserStep,
   SignatureTypedDataField,
+  TransactionPayload,
   TransactionUserStep,
 } from "@/lib/bridge-types";
 import {
@@ -73,6 +83,7 @@ const FALLBACK_STARGATE_TOKEN_SYMBOL_ALIASES: Record<string, string> = {
 const STARGATE_ICONS_BASE_URL = "https://icons-ckg.pages.dev/stargate-light";
 const BRIDGE_API_KEY_HEADER = "x-bridge-api-key";
 const LAYERZERO_API_KEY_STORAGE_KEY = "earthbound.layerzero_api_key";
+const CUSTOM_OFT_CONFIGS_STORAGE_KEY = "earthbound.custom_oft_configs.v1";
 const GITHUB_REPOSITORY_URL = "https://github.com/c0mm4nd/earthbound";
 const SURFACE_CARD_CLASS =
   "rounded-[1.75rem] border border-white/10 bg-[var(--surface-strong)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] sm:p-5";
@@ -141,6 +152,31 @@ type InlineOptionItem = {
   searchTerms?: string[];
   selected?: boolean;
   onSelect: () => void;
+};
+
+type CustomOftConfigDraft = {
+  id?: string;
+  json: string;
+};
+
+type OftDiscoveryImportPayload = {
+  name: string;
+  symbol: string;
+  endpointVersion?: string;
+  deployments: Record<string, CustomOftDeployment>;
+};
+
+type OftDiscoveryEntry = {
+  key: string;
+  name: string;
+  symbol: string;
+  endpointVersion?: string;
+  sharedDecimals?: number;
+  deployments: CustomOftDeploymentWithChainKey[];
+};
+
+type CustomOftDeploymentWithChainKey = LayerZeroOftListDeployment & {
+  chainKey: string;
 };
 
 function getBridgeApiRequestHeaders(
@@ -344,6 +380,774 @@ function formatEstimatedSeconds(seconds: string | number | undefined | null) {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error.";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function createStableId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeIdentityAddress(value?: string | null) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function isCustomOftSupportedSourceChainType(chainType?: BridgeChainType | null) {
+  return chainType === "EVM" || chainType === "SOLANA";
+}
+
+function isLikelyOftContractAddress(value: string) {
+  const normalizedValue = value.trim();
+
+  if (!normalizedValue) {
+    return false;
+  }
+
+  if (/^0x[a-fA-F0-9]{40}$/.test(normalizedValue)) {
+    return true;
+  }
+
+  return /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(normalizedValue);
+}
+
+function getLayerZeroScanUrl(txHash?: string) {
+  return txHash ? `https://layerzeroscan.com/tx/${txHash}` : undefined;
+}
+
+function getSortedCustomOftDeployments(config?: Pick<CustomOftConfig, "deployments"> | null) {
+  return Object.values(config?.deployments ?? {}).sort((left, right) =>
+    left.chainKey.localeCompare(right.chainKey),
+  );
+}
+
+function createCustomOftJsonTemplate(sourceChainKey = "ethereum", destinationChainKey = "base") {
+  const chainKeys = [sourceChainKey, destinationChainKey].filter(
+    (chainKey, index, current) => chainKey && current.indexOf(chainKey) === index,
+  );
+  const placeholderAddresses = [
+    "0x1111111111111111111111111111111111111111",
+    "0x2222222222222222222222222222222222222222",
+  ];
+
+  return JSON.stringify(
+    {
+      OFT: [
+        {
+          name: "My OFT",
+          endpointVersion: "v2",
+          deployments: Object.fromEntries(
+            chainKeys.map((chainKey, index) => [
+              chainKey,
+              {
+                address:
+                  placeholderAddresses[index] ??
+                  "0x3333333333333333333333333333333333333333",
+                localDecimals: 18,
+                type: "OFT",
+              } satisfies LayerZeroOftListDeployment,
+            ]),
+          ),
+        } satisfies LayerZeroOftListEntry,
+      ],
+    } satisfies LayerZeroOftListResponse,
+    null,
+    2,
+  );
+}
+
+function serializeCustomOftConfig(config: CustomOftConfig): LayerZeroOftListEntry {
+  return {
+    name: config.name,
+    endpointVersion: config.endpointVersion,
+    deployments: Object.fromEntries(
+      getSortedCustomOftDeployments(config).map((deployment) => [
+        deployment.chainKey,
+        {
+          address: deployment.oftAddress,
+          innerTokenAddress: deployment.tokenAddress,
+          localDecimals: deployment.decimals,
+          approvalRequired: deployment.approvalRequired,
+          type: deployment.type,
+        } satisfies LayerZeroOftListDeployment,
+      ]),
+    ),
+  };
+}
+
+function serializeCustomOftConfigs(configs: CustomOftConfig[]): LayerZeroOftListResponse {
+  const response: LayerZeroOftListResponse = {};
+
+  for (const config of configs) {
+    const symbol = config.symbol.trim().toUpperCase();
+
+    if (!symbol) {
+      continue;
+    }
+
+    response[symbol] = [...(response[symbol] ?? []), serializeCustomOftConfig(config)];
+  }
+
+  return Object.fromEntries(
+    Object.entries(response).sort(([leftSymbol, leftEntries], [rightSymbol, rightEntries]) => {
+      const symbolCompare = leftSymbol.localeCompare(rightSymbol);
+
+      if (symbolCompare !== 0) {
+        return symbolCompare;
+      }
+
+      return (leftEntries[0]?.name ?? leftSymbol).localeCompare(rightEntries[0]?.name ?? rightSymbol);
+    }),
+  );
+}
+
+function toCustomOftConfigDraft(config?: CustomOftConfig | null): CustomOftConfigDraft {
+  return {
+    id: config?.id,
+    json: JSON.stringify(
+      config ? serializeCustomOftConfigs([config]) : createCustomOftJsonTemplate(),
+      null,
+      2,
+    ),
+  };
+}
+
+function parseCustomOftDeployment(
+  value: unknown,
+  fallbackChainKey?: string,
+): CustomOftDeployment | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const chainKey =
+    typeof value.chainKey === "string" && value.chainKey.trim()
+      ? value.chainKey.trim()
+      : (fallbackChainKey?.trim() ?? "");
+  const oftAddress =
+    typeof value.oftAddress === "string"
+      ? value.oftAddress.trim()
+      : typeof value.address === "string"
+        ? value.address.trim()
+        : "";
+  const tokenAddress =
+    typeof value.tokenAddress === "string"
+      ? value.tokenAddress.trim()
+      : typeof value.innerTokenAddress === "string"
+        ? value.innerTokenAddress.trim()
+        : "";
+  const rawDecimals =
+    typeof value.decimals === "number" || typeof value.decimals === "string"
+      ? value.decimals
+      : typeof value.localDecimals === "number" || typeof value.localDecimals === "string"
+        ? value.localDecimals
+        : typeof value.sharedDecimals === "number" || typeof value.sharedDecimals === "string"
+          ? value.sharedDecimals
+          : undefined;
+  const decimals =
+    typeof rawDecimals === "number"
+      ? rawDecimals
+      : typeof rawDecimals === "string"
+        ? Number.parseInt(rawDecimals, 10)
+        : Number.NaN;
+  const approvalRequired =
+    typeof value.approvalRequired === "boolean" ? value.approvalRequired : undefined;
+  const type = typeof value.type === "string" && value.type.trim() ? value.type.trim() : undefined;
+
+  if (!chainKey || !oftAddress || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+    return null;
+  }
+
+  return {
+    chainKey,
+    oftAddress,
+    tokenAddress: tokenAddress || undefined,
+    decimals,
+    approvalRequired,
+    type,
+  };
+}
+
+function normalizeCustomOftDeployments(value: unknown) {
+  const deployments: Record<string, CustomOftDeployment> = {};
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const deployment = parseCustomOftDeployment(item);
+
+      if (deployment) {
+        deployments[deployment.chainKey] = deployment;
+      }
+    }
+
+    return deployments;
+  }
+
+  if (!isRecord(value)) {
+    return deployments;
+  }
+
+  for (const [chainKey, deploymentValue] of Object.entries(value)) {
+    const deployment = parseCustomOftDeployment(deploymentValue, chainKey);
+
+    if (deployment) {
+      deployments[deployment.chainKey] = deployment;
+    }
+  }
+
+  return deployments;
+}
+
+function parseLayerZeroOftListConfigs(value: unknown) {
+  if (!isRecord(value)) {
+    return [] as CustomOftConfig[];
+  }
+
+  return Object.entries(value).flatMap(([symbolKey, variants]) => {
+    const symbol = symbolKey.trim().toUpperCase();
+
+    if (!symbol || !Array.isArray(variants)) {
+      return [];
+    }
+
+    return variants.flatMap((variant) => {
+      if (!isRecord(variant)) {
+        return [];
+      }
+
+      const name =
+        typeof variant.name === "string" && variant.name.trim() ? variant.name.trim() : symbol;
+      const endpointVersion =
+        typeof variant.endpointVersion === "string" && variant.endpointVersion.trim()
+          ? variant.endpointVersion.trim()
+          : undefined;
+      const deployments = normalizeCustomOftDeployments(variant.deployments);
+
+      if (!Object.keys(deployments).length) {
+        return [];
+      }
+
+      return [
+        {
+          id: createStableId(),
+          name,
+          symbol,
+          endpointVersion,
+          deployments,
+        } satisfies CustomOftConfig,
+      ];
+    });
+  });
+}
+
+function validateCustomOftConfig(
+  config: CustomOftConfig,
+  chainByKey: Map<string, BridgeChain>,
+) {
+  if (!config.name.trim()) {
+    return "Enter a config name.";
+  }
+
+  if (!config.symbol.trim()) {
+    return "Enter a token symbol.";
+  }
+
+  const deployments = getSortedCustomOftDeployments(config);
+
+  if (deployments.length < 2) {
+    return `Add at least two deployments for ${config.symbol.trim().toUpperCase()}.`;
+  }
+
+  for (const [index, deployment] of deployments.entries()) {
+    const chain = chainByKey.get(deployment.chainKey);
+
+    if (!chain) {
+      return `Choose a valid chain for deployment ${index + 1}.`;
+    }
+
+    if (!validateAddressForChainType(chain.chainType, deployment.oftAddress)) {
+      return `Enter a valid OFT address for ${chain.shortName}.`;
+    }
+
+    if (
+      deployment.tokenAddress &&
+      !validateAddressForChainType(chain.chainType, deployment.tokenAddress)
+    ) {
+      return `Enter a valid spend token address for ${chain.shortName}.`;
+    }
+
+    if (
+      !Number.isInteger(deployment.decimals) ||
+      deployment.decimals < 0 ||
+      deployment.decimals > 255
+    ) {
+      return `Enter a valid decimals value for ${chain.shortName}.`;
+    }
+  }
+
+  if (
+    !deployments.some((deployment) => {
+      const chain = chainByKey.get(deployment.chainKey);
+
+      return chain && isCustomOftSupportedSourceChainType(chain.chainType);
+    })
+  ) {
+    return `Add at least one EVM or Solana deployment as a source chain for ${config.symbol
+      .trim()
+      .toUpperCase()}.`;
+  }
+
+  return null;
+}
+
+function validateCustomOftConfigs(
+  configs: CustomOftConfig[],
+  chainByKey: Map<string, BridgeChain>,
+) {
+  for (const config of configs) {
+    const error = validateCustomOftConfig(config, chainByKey);
+
+    if (error) {
+      return error;
+    }
+  }
+
+  return null;
+}
+
+function getCustomOftDeploymentIdentity(
+  deployment: Pick<CustomOftDeployment, "chainKey" | "oftAddress">,
+) {
+  return [
+    deployment.chainKey.trim().toLowerCase(),
+    normalizeIdentityAddress(deployment.oftAddress),
+  ].join("|");
+}
+
+function getCustomOftConfigIdentity(config: Pick<CustomOftConfig, "deployments">) {
+  return Object.values(config.deployments)
+    .map((deployment) => getCustomOftDeploymentIdentity(deployment))
+    .filter(Boolean)
+    .sort()
+    .join("||");
+}
+
+function mergeCustomOftDeployments(
+  existingDeployment: CustomOftDeployment,
+  incomingDeployment: CustomOftDeployment,
+): CustomOftDeployment {
+  return {
+    chainKey: incomingDeployment.chainKey,
+    oftAddress: incomingDeployment.oftAddress,
+    tokenAddress: incomingDeployment.tokenAddress ?? existingDeployment.tokenAddress,
+    decimals: incomingDeployment.decimals,
+    approvalRequired: incomingDeployment.approvalRequired ?? existingDeployment.approvalRequired,
+    type: incomingDeployment.type ?? existingDeployment.type,
+  };
+}
+
+function canMergeCustomOftConfigs(left: CustomOftConfig, right: CustomOftConfig) {
+  if (left.symbol.trim().toLowerCase() !== right.symbol.trim().toLowerCase()) {
+    return false;
+  }
+
+  const leftName = left.name.trim().toLowerCase();
+  const rightName = right.name.trim().toLowerCase();
+
+  if (leftName && rightName && leftName !== rightName) {
+    return false;
+  }
+
+  const leftDeploymentIdentities = new Set(
+    Object.values(left.deployments).map((deployment) => getCustomOftDeploymentIdentity(deployment)),
+  );
+
+  return Object.values(right.deployments).some((deployment) =>
+    leftDeploymentIdentities.has(getCustomOftDeploymentIdentity(deployment)),
+  );
+}
+
+function mergeCustomOftConfigs(existingConfig: CustomOftConfig, incomingConfig: CustomOftConfig) {
+  const deployments = { ...existingConfig.deployments };
+
+  for (const deployment of getSortedCustomOftDeployments(incomingConfig)) {
+    deployments[deployment.chainKey] = deployments[deployment.chainKey]
+      ? mergeCustomOftDeployments(deployments[deployment.chainKey], deployment)
+      : deployment;
+  }
+
+  return {
+    id: existingConfig.id,
+    name:
+      incomingConfig.name.trim().length >= existingConfig.name.trim().length
+        ? incomingConfig.name
+        : existingConfig.name,
+    symbol: incomingConfig.symbol || existingConfig.symbol,
+    endpointVersion: incomingConfig.endpointVersion ?? existingConfig.endpointVersion,
+    deployments,
+  } satisfies CustomOftConfig;
+}
+
+function consolidateCustomOftConfigs(configs: CustomOftConfig[]) {
+  const consolidatedConfigs: CustomOftConfig[] = [];
+
+  for (const config of configs) {
+    const matchingConfigIndex = consolidatedConfigs.findIndex(
+      (candidate) =>
+        candidate.id === config.id ||
+        getCustomOftConfigIdentity(candidate) === getCustomOftConfigIdentity(config) ||
+        canMergeCustomOftConfigs(candidate, config),
+    );
+
+    if (matchingConfigIndex === -1) {
+      consolidatedConfigs.push(config);
+      continue;
+    }
+
+    consolidatedConfigs[matchingConfigIndex] = mergeCustomOftConfigs(
+      consolidatedConfigs[matchingConfigIndex],
+      config,
+    );
+  }
+
+  return consolidatedConfigs;
+}
+
+function parseStoredCustomOftConfigs(value: string | null) {
+  if (!value) {
+    return [] as CustomOftConfig[];
+  }
+
+  try {
+    const parsedValue = JSON.parse(value) as unknown;
+
+    if (isRecord(parsedValue) && !Array.isArray(parsedValue)) {
+      const layerZeroConfigs = parseLayerZeroOftListConfigs(parsedValue);
+
+      if (layerZeroConfigs.length) {
+        return consolidateCustomOftConfigs(layerZeroConfigs);
+      }
+    }
+
+    if (!Array.isArray(parsedValue)) {
+      return [] as CustomOftConfig[];
+    }
+
+    return consolidateCustomOftConfigs(
+      parsedValue.flatMap((item) => {
+      if (!isRecord(item)) {
+        return [];
+      }
+
+      const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : createStableId();
+      const name = typeof item.name === "string" ? item.name.trim() : "";
+      const symbol = typeof item.symbol === "string" ? item.symbol.trim() : "";
+      const endpointVersion =
+        typeof item.endpointVersion === "string" && item.endpointVersion.trim()
+          ? item.endpointVersion.trim()
+          : undefined;
+      const deployments = normalizeCustomOftDeployments(item.deployments);
+
+      if (name && symbol && Object.keys(deployments).length) {
+        return [
+          {
+            id,
+            name,
+            symbol,
+            endpointVersion,
+            deployments,
+          } satisfies CustomOftConfig,
+        ];
+      }
+
+      const srcChainKey = typeof item.srcChainKey === "string" ? item.srcChainKey.trim() : "";
+      const dstChainKey = typeof item.dstChainKey === "string" ? item.dstChainKey.trim() : "";
+      const srcOftAddress =
+        typeof item.srcOftAddress === "string" ? item.srcOftAddress.trim() : "";
+      const srcTokenAddress =
+        typeof item.srcTokenAddress === "string" ? item.srcTokenAddress.trim() : "";
+      const dstOftAddress =
+        typeof item.dstOftAddress === "string" ? item.dstOftAddress.trim() : "";
+      const rawDecimals = item.decimals;
+      const decimals =
+        typeof rawDecimals === "number"
+          ? rawDecimals
+          : typeof rawDecimals === "string"
+            ? Number.parseInt(rawDecimals, 10)
+            : Number.NaN;
+
+      if (
+        !name ||
+        !symbol ||
+        !srcChainKey ||
+        !dstChainKey ||
+        !srcOftAddress ||
+        !Number.isInteger(decimals) ||
+        decimals < 0 ||
+        decimals > 255
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          id,
+          name,
+          symbol,
+          deployments: {
+            [srcChainKey]: {
+              chainKey: srcChainKey,
+              oftAddress: srcOftAddress,
+              tokenAddress: srcTokenAddress || undefined,
+              decimals,
+            },
+            [dstChainKey]: {
+              chainKey: dstChainKey,
+              oftAddress: dstOftAddress || srcOftAddress,
+              decimals,
+            },
+          },
+        } satisfies CustomOftConfig,
+      ];
+      }),
+    );
+  } catch {
+    return [] as CustomOftConfig[];
+  }
+}
+
+function upsertCustomOftConfig(existingConfigs: CustomOftConfig[], nextConfig: CustomOftConfig) {
+  const nextIdentity = getCustomOftConfigIdentity(nextConfig);
+  const meshDuplicate = existingConfigs.find(
+    (config) =>
+      config.id !== nextConfig.id && getCustomOftConfigIdentity(config) === nextIdentity,
+  );
+  const exactMatch = existingConfigs.find((config) => config.id === nextConfig.id);
+  const storedConfigId = meshDuplicate?.id ?? exactMatch?.id ?? nextConfig.id;
+  const storedConfig = meshDuplicate
+    ? mergeCustomOftConfigs(meshDuplicate, {
+        ...nextConfig,
+        id: storedConfigId,
+      })
+    : exactMatch
+      ? mergeCustomOftConfigs(exactMatch, {
+          ...nextConfig,
+          id: storedConfigId,
+        })
+      : {
+          ...nextConfig,
+          id: storedConfigId,
+        };
+
+  return {
+    storedConfig: storedConfig,
+    mode: meshDuplicate
+      ? ("updated_duplicate" as const)
+      : exactMatch
+        ? ("updated_existing" as const)
+        : ("created" as const),
+    configs: dedupeCustomOftConfigs([
+      storedConfig,
+      ...existingConfigs.filter(
+        (config) => config.id !== storedConfig.id && config.id !== nextConfig.id,
+      ),
+    ]),
+  };
+}
+
+function dedupeCustomOftConfigs(configs: CustomOftConfig[]) {
+  const consolidatedConfigs = consolidateCustomOftConfigs(configs);
+  const seenIdentities = new Set<string>();
+
+  return consolidatedConfigs.filter((config) => {
+    const identity = getCustomOftConfigIdentity(config);
+
+    if (!identity || seenIdentities.has(identity)) {
+      return false;
+    }
+
+    seenIdentities.add(identity);
+    return true;
+  });
+}
+
+function mergeImportedCustomOftConfigs(
+  existingConfigs: CustomOftConfig[],
+  importedConfigs: CustomOftConfig[],
+) {
+  let nextConfigs = existingConfigs;
+  let createdCount = 0;
+  let updatedCount = 0;
+
+  for (const importedConfig of importedConfigs) {
+    const result = upsertCustomOftConfig(nextConfigs, importedConfig);
+    nextConfigs = result.configs;
+
+    if (result.mode === "created") {
+      createdCount += 1;
+    } else {
+      updatedCount += 1;
+    }
+  }
+
+  return {
+    configs: dedupeCustomOftConfigs(nextConfigs),
+    createdCount,
+    updatedCount,
+  };
+}
+
+function normalizeOftDiscoveryEntries(
+  response: LayerZeroOftListResponse,
+  supportedChains: BridgeChain[],
+) {
+  const supportedChainKeys = new Set(supportedChains.map((chain) => chain.chainKey));
+  const entries: OftDiscoveryEntry[] = [];
+
+  for (const [symbol, variants] of Object.entries(response)) {
+    if (!Array.isArray(variants)) {
+      continue;
+    }
+
+    for (const [index, variant] of variants.entries()) {
+      const deploymentsObject = isRecord(variant.deployments) ? variant.deployments : {};
+      const deployments = Object.entries(deploymentsObject)
+        .flatMap(([chainKey, deployment]) => {
+          if (!supportedChainKeys.has(chainKey) || !isRecord(deployment)) {
+            return [];
+          }
+
+          const address =
+            typeof deployment.address === "string" ? deployment.address.trim() : "";
+
+          if (!address) {
+            return [];
+          }
+
+          return [
+            {
+              chainKey,
+              address,
+              localDecimals:
+                typeof deployment.localDecimals === "number"
+                  ? deployment.localDecimals
+                  : undefined,
+              sharedDecimals:
+                typeof deployment.sharedDecimals === "number"
+                  ? deployment.sharedDecimals
+                  : undefined,
+              innerTokenAddress:
+                typeof deployment.innerTokenAddress === "string"
+                  ? deployment.innerTokenAddress
+                  : undefined,
+              approvalRequired:
+                typeof deployment.approvalRequired === "boolean"
+                  ? deployment.approvalRequired
+                  : undefined,
+              type: typeof deployment.type === "string" ? deployment.type : undefined,
+            } satisfies LayerZeroOftListDeployment & {
+              chainKey: string;
+            },
+          ];
+        })
+        .sort((left, right) => left.chainKey.localeCompare(right.chainKey));
+
+      if (!deployments.length) {
+        continue;
+      }
+
+      entries.push({
+        key: `${symbol}:${variant.name ?? symbol}:${index}`,
+        name: typeof variant.name === "string" && variant.name.trim() ? variant.name : symbol,
+        symbol,
+        endpointVersion:
+          typeof variant.endpointVersion === "string" ? variant.endpointVersion : undefined,
+        sharedDecimals:
+          typeof variant.sharedDecimals === "number" ? variant.sharedDecimals : undefined,
+        deployments,
+      });
+    }
+  }
+
+  return entries.sort((left, right) => {
+    const symbolCompare = left.symbol.localeCompare(right.symbol);
+
+    if (symbolCompare !== 0) {
+      return symbolCompare;
+    }
+
+    return left.name.localeCompare(right.name);
+  });
+}
+
+function buildCustomOftUserSteps(
+  srcChain: BridgeChain,
+  transactionData: LayerZeroOftTransferResponse["transactionData"],
+) {
+  const steps: QuoteUserStep[] = [];
+
+  if (!transactionData) {
+    throw new Error("Custom OFT API response did not include transaction data.");
+  }
+
+  if (srcChain.chainType === "EVM") {
+    if (isRecord(transactionData.approvalTransaction)) {
+      steps.push({
+        type: "TRANSACTION",
+        chainKey: srcChain.chainKey,
+        chainType: srcChain.chainType,
+        description: "Approve token spending",
+        transaction: {
+          encoded: transactionData.approvalTransaction as TransactionPayload,
+        },
+      });
+    }
+
+    if (!isRecord(transactionData.populatedTransaction)) {
+      throw new Error("Custom OFT transfer is missing an EVM transaction payload.");
+    }
+
+    steps.push({
+      type: "TRANSACTION",
+      chainKey: srcChain.chainKey,
+      chainType: srcChain.chainType,
+      description: "Send OFT transfer",
+      transaction: {
+        encoded: transactionData.populatedTransaction as TransactionPayload,
+      },
+    });
+
+    return steps;
+  }
+
+  if (srcChain.chainType === "SOLANA") {
+    if (
+      typeof transactionData.populatedTransaction !== "string" ||
+      !transactionData.populatedTransaction.trim()
+    ) {
+      throw new Error("Custom OFT transfer is missing a Solana transaction payload.");
+    }
+
+    steps.push({
+      type: "TRANSACTION",
+      chainKey: srcChain.chainKey,
+      chainType: srcChain.chainType,
+      description: "Send OFT transfer",
+      transaction: {
+        encoded: {
+          encoding: "base64",
+          data: transactionData.populatedTransaction,
+        },
+      },
+    });
+
+    return steps;
+  }
+
+  throw new Error(
+    `Custom OFT execution is not supported for ${getChainTypeDisplayLabel(srcChain.chainType)} in this build.`,
+  );
 }
 
 function compareQuotes(left: BridgeQuote, right: BridgeQuote) {
@@ -860,6 +1664,497 @@ function LayerZeroApiKeyModal({
   );
 }
 
+function CustomOftConfigModal({
+  draft,
+  error,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  draft: CustomOftConfigDraft;
+  error?: string | null;
+  onChange: (patch: Partial<CustomOftConfigDraft>) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-4xl rounded-[1.6rem] border border-white/12 bg-[var(--panel)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+              Custom OFT
+            </p>
+            <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">
+              {draft.id ? "Edit manual JSON" : "Manual JSON"}
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+              Paste the same JSON shape returned by LayerZero OFT discovery `GET /list`. Each top-
+              level key is a symbol, and each value is an array of OFT meshes for that symbol.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-sm text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white"
+            aria-label="Close custom OFT config dialog"
+          >
+            ×
+          </button>
+        </div>
+
+        <form onSubmit={onSubmit} className="mt-5 space-y-3">
+          <div className="rounded-[1.25rem] border border-white/10 bg-black/60 p-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+              JSON payload
+            </p>
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              Use the same fields as LayerZero discovery:
+              {" "}
+              <code>name</code>, <code>endpointVersion</code>, and deployment fields like
+              {" "}
+              <code>address</code>, <code>localDecimals</code>, <code>innerTokenAddress</code>,
+              {" "}
+              <code>approvalRequired</code>, and <code>type</code>.
+            </p>
+            <textarea
+              autoFocus
+              value={draft.json}
+              onChange={(event) => onChange({ json: event.target.value })}
+              spellCheck={false}
+              className={`${FIELD_CLASS} mt-4 min-h-[24rem] resize-y font-mono text-xs leading-6`}
+            />
+          </div>
+
+          {error ? (
+            <div className="rounded-[1rem] border border-white/18 bg-white/[0.04] px-3 py-2.5 text-sm text-white">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button type="button" onClick={onClose} className={GHOST_BUTTON_CLASS}>
+              Cancel
+            </button>
+            <button type="submit" className={PRIMARY_BUTTON_CLASS}>
+              Save
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function OftDiscoveryModal({
+  sourceChains,
+  destinationChains,
+  existingConfigs,
+  onClose,
+  onImport,
+}: {
+  sourceChains: BridgeChain[];
+  destinationChains: BridgeChain[];
+  existingConfigs: CustomOftConfig[];
+  onClose: () => void;
+  onImport: (payload: OftDiscoveryImportPayload) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
+  const deferredQuery = useDeferredValue(query.trim());
+  const supportedChains = useMemo(
+    () => [...sourceChains, ...destinationChains].filter(
+      (chain, index, current) =>
+        current.findIndex((candidate) => candidate.chainKey === chain.chainKey) === index,
+    ),
+    [destinationChains, sourceChains],
+  );
+  const chainByKey = useMemo(
+    () => new Map(supportedChains.map((chain) => [chain.chainKey, chain])),
+    [supportedChains],
+  );
+  const executableSourceChainKeys = useMemo(
+    () => new Set(sourceChains.map((chain) => chain.chainKey)),
+    [sourceChains],
+  );
+  const chainNames = useMemo(
+    () => supportedChains.map((chain) => chain.chainKey).join(","),
+    [supportedChains],
+  );
+  const shouldSearch =
+    deferredQuery.length >= 2 || (deferredQuery.length >= 10 && isLikelyOftContractAddress(deferredQuery));
+  const oftListQuery = useQuery({
+    queryKey: ["bridge", "oft", "list", deferredQuery, chainNames],
+    enabled: shouldSearch,
+    queryFn: async () => {
+      const searchParams = new URLSearchParams();
+
+      if (chainNames) {
+        searchParams.set("chainNames", chainNames);
+      }
+
+      if (isLikelyOftContractAddress(deferredQuery)) {
+        searchParams.set("contractAddresses", deferredQuery);
+      } else {
+        searchParams.set("symbols", deferredQuery.toUpperCase());
+      }
+
+      return fetchJson<LayerZeroOftListResponse>(`/api/bridge/oft-list?${searchParams.toString()}`);
+    },
+    staleTime: 60 * 1000,
+  });
+  const entries = useMemo(
+    () =>
+      oftListQuery.data
+        ? normalizeOftDiscoveryEntries(oftListQuery.data, supportedChains)
+        : [],
+    [oftListQuery.data, supportedChains],
+  );
+  const existingConfigByIdentity = useMemo(() => {
+    const nextConfigByIdentity = new Map<string, CustomOftConfig>();
+
+    for (const config of existingConfigs) {
+      nextConfigByIdentity.set(getCustomOftConfigIdentity(config), config);
+    }
+
+    return nextConfigByIdentity;
+  }, [existingConfigs]);
+
+  function buildImportPayload(entry: OftDiscoveryEntry): OftDiscoveryImportPayload {
+    return {
+      name: entry.name,
+      symbol: entry.symbol,
+      endpointVersion: entry.endpointVersion,
+      deployments: Object.fromEntries(
+        entry.deployments.map((deployment) => [
+          deployment.chainKey,
+          {
+            chainKey: deployment.chainKey,
+            oftAddress: deployment.address,
+            tokenAddress: deployment.innerTokenAddress ?? undefined,
+            decimals: deployment.localDecimals ?? entry.sharedDecimals ?? 18,
+            approvalRequired: deployment.approvalRequired,
+            type: deployment.type,
+          } satisfies CustomOftDeployment,
+        ]),
+      ),
+    };
+  }
+
+  function handleImport(entry: OftDiscoveryEntry) {
+    const payload = buildImportPayload(entry);
+
+    if (Object.keys(payload.deployments).length < 2) {
+      setImportError("LayerZero metadata must include at least two deployments to import a mesh.");
+      return;
+    }
+
+    onImport(payload);
+    setImportError(null);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
+      <div className="flex h-[min(52rem,calc(100vh-2rem))] w-full max-w-4xl flex-col rounded-[1.6rem] border border-white/12 bg-[var(--panel)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+              Discover OFT
+            </p>
+            <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">
+              Import from LayerZero metadata
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+              Search by token symbol or OFT contract address, then import the full OFT mesh. You
+              will choose source and destination chains later from the saved deployments.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-sm text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white"
+            aria-label="Close OFT discovery dialog"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="mt-5">
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search symbol like USDT0 or paste an OFT address"
+            className={FIELD_CLASS}
+          />
+        </div>
+
+        {importError ? (
+          <div className="mt-3 rounded-[1rem] border border-white/18 bg-white/[0.04] px-3 py-2.5 text-sm text-white">
+            {importError}
+          </div>
+        ) : null}
+
+        <div className="mt-4 min-h-0 flex-1 overflow-y-auto pr-1">
+          {!deferredQuery ? (
+            <div className="flex h-full items-center justify-center rounded-[1.25rem] border border-dashed border-white/12 bg-black/40 px-4 py-3 text-sm text-[var(--muted)]">
+              Enter a symbol or address to discover LayerZero OFTs.
+            </div>
+          ) : oftListQuery.isError ? (
+            <div className="flex h-full items-center justify-center rounded-[1.25rem] border border-white/18 bg-white/[0.04] px-4 py-3 text-sm text-white">
+              {getErrorMessage(oftListQuery.error)}
+            </div>
+          ) : oftListQuery.isPending ? (
+            <div className="flex h-full items-center justify-center rounded-[1.25rem] border border-white/10 bg-black px-4 py-3 text-sm text-[var(--muted)]">
+              Discovering OFTs...
+            </div>
+          ) : entries.length ? (
+            <div className="space-y-3">
+              {entries.map((entry) => {
+                const importPayload = buildImportPayload(entry);
+                const duplicateConfig =
+                  existingConfigByIdentity.get(getCustomOftConfigIdentity(importPayload)) ?? null;
+                const executableSourceCount = entry.deployments.filter((deployment) =>
+                  executableSourceChainKeys.has(deployment.chainKey),
+                ).length;
+
+                return (
+                  <article
+                    key={entry.key}
+                    className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-white">
+                          {entry.name} · {entry.symbol}
+                        </p>
+                        <p className="mt-1 text-xs text-[var(--muted)]">
+                          {entry.endpointVersion ? `${entry.endpointVersion.toUpperCase()} · ` : ""}
+                          {entry.deployments.length} deployment(s)
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleImport(entry)}
+                        disabled={entry.deployments.length < 2}
+                        className={PRIMARY_BUTTON_CLASS}
+                      >
+                        {duplicateConfig ? "Update" : "Import"}
+                      </button>
+                    </div>
+
+                    <div className="mt-3 rounded-[1rem] border border-white/10 bg-white/[0.03] px-3 py-3 text-xs text-[var(--muted)]">
+                      <div className="flex flex-wrap gap-2">
+                        <StatusPill tone="neutral">
+                          {Object.keys(importPayload.deployments).length} chains
+                        </StatusPill>
+                        <StatusPill tone={executableSourceCount ? "success" : "danger"}>
+                          {executableSourceCount} executable source
+                        </StatusPill>
+                        {entry.sharedDecimals !== undefined ? (
+                          <StatusPill tone="neutral">
+                            shared {entry.sharedDecimals} decimals
+                          </StatusPill>
+                        ) : null}
+                        {entry.endpointVersion ? (
+                          <StatusPill tone="neutral">
+                            {entry.endpointVersion.toUpperCase()}
+                          </StatusPill>
+                        ) : null}
+                      </div>
+                      {duplicateConfig ? (
+                        <p className="mt-3 text-white">
+                          This mesh already exists as &quot;{duplicateConfig.name}&quot;.
+                          Importing will update that saved config.
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-3 grid gap-2 text-xs text-[var(--muted)] sm:grid-cols-2">
+                      {entry.deployments.map((deployment) => (
+                        <div
+                          key={`${entry.key}:${deployment.chainKey}`}
+                          className="rounded-[1rem] border border-white/10 bg-white/[0.03] px-3 py-2.5"
+                        >
+                          <p className="font-medium text-white">
+                            {chainByKey.get(deployment.chainKey)?.name ?? deployment.chainKey}
+                          </p>
+                          <p className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">
+                            {deployment.chainKey} ·{" "}
+                            {getChainTypeDisplayLabel(
+                              chainByKey.get(deployment.chainKey)?.chainType,
+                            )}
+                          </p>
+                          <p className="mt-1 break-all">{deployment.address}</p>
+                          <p className="mt-1">
+                            decimals {deployment.localDecimals ?? entry.sharedDecimals ?? "--"}
+                            {deployment.innerTokenAddress
+                              ? ` · inner ${shortenAddress(deployment.innerTokenAddress)}`
+                              : ""}
+                            {deployment.approvalRequired ? " · approval" : ""}
+                            {deployment.type ? ` · ${deployment.type}` : ""}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex h-full items-center justify-center rounded-[1.25rem] border border-dashed border-white/12 bg-black/40 px-4 py-3 text-sm text-[var(--muted)]">
+              No OFT metadata matched this query.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CustomOftSetupModal({
+  configs,
+  selectedConfigId,
+  onSelectConfig,
+  onDiscoverMetadata,
+  onManualJson,
+  onExport,
+  onImport,
+  onDelete,
+  onClose,
+}: {
+  configs: CustomOftConfig[];
+  selectedConfigId: string;
+  onSelectConfig: (id: string) => void;
+  onDiscoverMetadata: () => void;
+  onManualJson: () => void;
+  onExport: () => void;
+  onImport: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const selectedConfig = configs.find((c) => c.id === selectedConfigId) ?? null;
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg rounded-[1.6rem] border border-white/12 bg-[var(--panel)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+              Direct API
+            </p>
+            <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">Custom OFT</h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+              Configure OFT meshes to bridge directly via the LayerZero OFT API. Saved tokens
+              appear in the source token list.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-sm text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white"
+            aria-label="Close custom OFT setup"
+          >
+            ×
+          </button>
+        </div>
+
+        {configs.length > 0 ? (
+          <div className="mt-4 space-y-2">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+              Saved configs
+            </p>
+            <select
+              value={selectedConfigId}
+              onChange={(event) => onSelectConfig(event.target.value)}
+              className={FIELD_CLASS}
+            >
+              <option value="">Select a config</option>
+              {configs.map((config) => (
+                <option key={config.id} value={config.id}>
+                  {config.name} · {config.symbol} · {Object.keys(config.deployments).length} chains
+                </option>
+              ))}
+            </select>
+            {selectedConfig ? (
+              <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-3 text-sm">
+                <p className="font-medium text-white">
+                  {selectedConfig.name} · {selectedConfig.symbol}
+                </p>
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  {Object.keys(selectedConfig.deployments).length} deployments
+                  {selectedConfig.endpointVersion
+                    ? ` · Endpoint ${selectedConfig.endpointVersion.toUpperCase()}`
+                    : ""}
+                </p>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="mt-4 rounded-[1.25rem] border border-dashed border-white/12 bg-black/40 px-4 py-3 text-sm text-[var(--muted)]">
+            No saved configs. Discover or add one below.
+          </div>
+        )}
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+              LayerZero Metadata
+            </p>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              Search the LayerZero /list endpoint and import a full OFT mesh.
+            </p>
+            <button type="button" onClick={onDiscoverMetadata} className={`${GHOST_BUTTON_CLASS} mt-3`}>
+              Discover
+            </button>
+          </div>
+          <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+              Manual JSON
+            </p>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              Paste the same JSON structure returned by LayerZero OFT discovery.
+            </p>
+            <button type="button" onClick={onManualJson} className={`${GHOST_BUTTON_CLASS} mt-3`}>
+              Paste JSON
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onExport}
+              disabled={!configs.length}
+              className={GHOST_BUTTON_CLASS}
+            >
+              Export JSON
+            </button>
+            <button type="button" onClick={onImport} className={GHOST_BUTTON_CLASS}>
+              Import JSON
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              disabled={!selectedConfig}
+              className={GHOST_BUTTON_CLASS}
+            >
+              Delete
+            </button>
+          </div>
+          <button type="button" onClick={onClose} className={PRIMARY_BUTTON_CLASS}>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function BridgeApp() {
   const { address, chainId, isConnected } = useAccount();
   const { connect, connectors, isPending: isConnectPending } = useConnect();
@@ -885,11 +2180,21 @@ export function BridgeApp() {
     ExecutionNotification[]
   >([]);
   const [refreshCountdownNow, setRefreshCountdownNow] = useState(() => Date.now());
+  const [isCustomOftSetupModalOpen, setIsCustomOftSetupModalOpen] = useState(false);
   const [tokenDisplaySource, setTokenDisplaySource] = useState<TokenDisplaySource>("stargate");
   const [layerZeroApiKey, setLayerZeroApiKey] = useState("");
   const [layerZeroApiKeyDraft, setLayerZeroApiKeyDraft] = useState("");
   const [layerZeroApiKeyError, setLayerZeroApiKeyError] = useState<string | null>(null);
   const [isLayerZeroApiKeyModalOpen, setIsLayerZeroApiKeyModalOpen] = useState(false);
+  const [customOftConfigs, setCustomOftConfigs] = useState<CustomOftConfig[]>([]);
+  const [selectedCustomOftConfigId, setSelectedCustomOftConfigId] = useState("");
+  const [selectedCustomOftSrcChainKey, setSelectedCustomOftSrcChainKey] = useState("");
+  const [selectedCustomOftDstChainKey, setSelectedCustomOftDstChainKey] = useState("");
+  const [customOftConfigDraft, setCustomOftConfigDraft] =
+    useState<CustomOftConfigDraft | null>(null);
+  const [customOftConfigError, setCustomOftConfigError] = useState<string | null>(null);
+  const [isOftDiscoveryModalOpen, setIsOftDiscoveryModalOpen] = useState(false);
+  const customOftImportInputRef = useRef<HTMLInputElement | null>(null);
   const balanceSwitchAttemptRef = useRef<string | null>(null);
   const notificationTimeoutsRef = useRef(new Map<string, number>());
   const quoteRequestIdRef = useRef(0);
@@ -938,16 +2243,119 @@ export function BridgeApp() {
       (chain) => chain.chainKey !== "stable",
     );
   }, [chainsQuery.data]);
+  const chainByKey = useMemo(
+    () => new Map(supportedChains.map((chain) => [chain.chainKey, chain])),
+    [supportedChains],
+  );
 
   const srcChain = useMemo(
-    () => supportedChains.find((chain) => chain.chainKey === srcChainKey) ?? null,
-    [srcChainKey, supportedChains],
+    () => chainByKey.get(srcChainKey) ?? null,
+    [chainByKey, srcChainKey],
   );
 
   const dstChain = useMemo(
-    () => supportedChains.find((chain) => chain.chainKey === dstChainKey) ?? null,
-    [dstChainKey, supportedChains],
+    () => chainByKey.get(dstChainKey) ?? null,
+    [chainByKey, dstChainKey],
   );
+  const customOftSourceChains = useMemo(
+    () => supportedChains.filter((chain) => isCustomOftSupportedSourceChainType(chain.chainType)),
+    [supportedChains],
+  );
+  const selectedCustomOftConfig = useMemo(
+    () => customOftConfigs.find((config) => config.id === selectedCustomOftConfigId) ?? null,
+    [customOftConfigs, selectedCustomOftConfigId],
+  );
+  const selectedCustomOftDeployments = useMemo(
+    () => getSortedCustomOftDeployments(selectedCustomOftConfig),
+    [selectedCustomOftConfig],
+  );
+  const customOftRuntimeSourceChains = useMemo(
+    () =>
+      selectedCustomOftDeployments.flatMap((deployment) => {
+        const chain = chainByKey.get(deployment.chainKey);
+
+        return chain && isCustomOftSupportedSourceChainType(chain.chainType) ? [chain] : [];
+      }),
+    [chainByKey, selectedCustomOftDeployments],
+  );
+  const customOftRuntimeDestinationChains = useMemo(
+    () =>
+      selectedCustomOftDeployments.flatMap((deployment) => {
+        if (deployment.chainKey === selectedCustomOftSrcChainKey) {
+          return [];
+        }
+
+        const chain = chainByKey.get(deployment.chainKey);
+
+        return chain ? [chain] : [];
+      }),
+    [chainByKey, selectedCustomOftDeployments, selectedCustomOftSrcChainKey],
+  );
+  const customOftSrcChain = useMemo(
+    () => chainByKey.get(selectedCustomOftSrcChainKey) ?? null,
+    [chainByKey, selectedCustomOftSrcChainKey],
+  );
+  const customOftDstChain = useMemo(
+    () => chainByKey.get(selectedCustomOftDstChainKey) ?? null,
+    [chainByKey, selectedCustomOftDstChainKey],
+  );
+  const selectedCustomOftSourceDeployment = useMemo(
+    () => selectedCustomOftConfig?.deployments[selectedCustomOftSrcChainKey] ?? null,
+    [selectedCustomOftConfig, selectedCustomOftSrcChainKey],
+  );
+  const selectedCustomOftDestinationDeployment = useMemo(
+    () => selectedCustomOftConfig?.deployments[selectedCustomOftDstChainKey] ?? null,
+    [selectedCustomOftConfig, selectedCustomOftDstChainKey],
+  );
+  const customOftSourceToken = useMemo<BridgeToken | null>(() => {
+    if (!selectedCustomOftConfig || !customOftSrcChain || !selectedCustomOftSourceDeployment) {
+      return null;
+    }
+
+    return {
+      chainKey: customOftSrcChain.chainKey,
+      address:
+        selectedCustomOftSourceDeployment.tokenAddress ?? selectedCustomOftSourceDeployment.oftAddress,
+      decimals: selectedCustomOftSourceDeployment.decimals,
+      symbol: selectedCustomOftConfig.symbol,
+      name: selectedCustomOftConfig.name,
+    };
+  }, [customOftSrcChain, selectedCustomOftConfig, selectedCustomOftSourceDeployment]);
+  const customOftDestinationToken = useMemo<BridgeToken | null>(() => {
+    if (!selectedCustomOftConfig || !customOftDstChain || !selectedCustomOftDestinationDeployment) {
+      return null;
+    }
+
+    return {
+      chainKey: customOftDstChain.chainKey,
+      address:
+        selectedCustomOftDestinationDeployment.tokenAddress ??
+        selectedCustomOftDestinationDeployment.oftAddress,
+      decimals: selectedCustomOftDestinationDeployment.decimals,
+      symbol: selectedCustomOftConfig.symbol,
+      name: selectedCustomOftConfig.name,
+    };
+  }, [customOftDstChain, selectedCustomOftConfig, selectedCustomOftDestinationDeployment]);
+  const isCustomOftSource = useMemo(() => {
+    if (!selectedCustomOftConfigId || !selectedCustomOftSrcChainKey) return false;
+    const config = customOftConfigs.find((c) => c.id === selectedCustomOftConfigId);
+    if (!config) return false;
+    const deployment = config.deployments[selectedCustomOftSrcChainKey];
+    if (!deployment) return false;
+    const expectedAddress = (deployment.tokenAddress ?? deployment.oftAddress).toLowerCase();
+    return (
+      srcTokenAddress.toLowerCase() === expectedAddress &&
+      srcChainKey === selectedCustomOftSrcChainKey
+    );
+  }, [
+    customOftConfigs,
+    selectedCustomOftConfigId,
+    selectedCustomOftSrcChainKey,
+    srcTokenAddress,
+    srcChainKey,
+  ]);
+  const activeSrcChain = isCustomOftSource ? customOftSrcChain : srcChain;
+  const activeDstChain = isCustomOftSource ? customOftDstChain : dstChain;
 
   const srcTokens = useMemo(() => {
     return (tokensQuery.data?.tokens ?? [])
@@ -1026,38 +2434,73 @@ export function BridgeApp() {
     () => getTokenPresentation(selectedDstToken, tokenDisplaySource, stargateTokenDetailsById),
     [selectedDstToken, stargateTokenDetailsById, tokenDisplaySource],
   );
+  const customOftSourceTokenPresentation = useMemo(
+    () => getTokenPresentation(customOftSourceToken, "layerzero", stargateTokenDetailsById),
+    [customOftSourceToken, stargateTokenDetailsById],
+  );
+  const customOftDestinationTokenPresentation = useMemo(
+    () => getTokenPresentation(customOftDestinationToken, "layerzero", stargateTokenDetailsById),
+    [customOftDestinationToken, stargateTokenDetailsById],
+  );
   const selectedSrcTokenSymbol = selectedSrcTokenPresentation?.symbol ?? "--";
   const selectedDstTokenSymbol = selectedDstTokenPresentation?.symbol ?? "--";
   const selectedSrcTokenIconUrl =
     selectedSrcTokenPresentation?.iconUrl ?? getStargateTokenIconUrl(selectedSrcTokenSymbol);
   const selectedDstTokenIconUrl =
     selectedDstTokenPresentation?.iconUrl ?? getStargateTokenIconUrl(selectedDstTokenSymbol);
+  const customOftSourceTokenSymbol = customOftSourceTokenPresentation?.symbol ?? "--";
+  const customOftDestinationTokenSymbol = customOftDestinationTokenPresentation?.symbol ?? "--";
+  const customOftSourceTokenIconUrl =
+    customOftSourceTokenPresentation?.iconUrl ??
+    getStargateTokenIconUrl(customOftSourceTokenSymbol);
+  const customOftDestinationTokenIconUrl =
+    customOftDestinationTokenPresentation?.iconUrl ??
+    getStargateTokenIconUrl(customOftDestinationTokenSymbol);
+  const activeBalanceToken = isCustomOftSource ? customOftSourceToken : selectedSrcToken;
+  const activeBalanceTokenSymbol =
+    isCustomOftSource ? customOftSourceTokenSymbol : selectedSrcTokenSymbol;
   const hasLayerZeroApiKey = Boolean(layerZeroApiKey.trim());
   const bridgeApiProvider =
     tokenDisplaySource === "layerzero"
       ? (hasLayerZeroApiKey ? "layerzero" : "stargate-v2")
       : "stargate";
   const isLayerZeroFallback = tokenDisplaySource === "layerzero" && !hasLayerZeroApiKey;
-  const sourceChainType = srcChain?.chainType;
-  const destinationChainType = dstChain?.chainType;
+  const sourceChainType = activeSrcChain?.chainType;
+  const destinationChainType = activeDstChain?.chainType;
   const sourceChainUsesEvmWallet =
-    sourceChainType === "EVM" && Boolean(srcChain && srcChain.chainKey in walletChainByKey);
+    sourceChainType === "EVM" &&
+    Boolean(activeSrcChain && activeSrcChain.chainKey in walletChainByKey);
   const activeExternalWalletSession = sourceChainType
     ? bridgeWallets.walletSessionsByChainType[sourceChainType] ?? null
+    : null;
+  const destinationExternalWalletSession = destinationChainType
+    ? bridgeWallets.walletSessionsByChainType[destinationChainType] ?? null
     : null;
   const sourceWalletAddress = sourceChainUsesEvmWallet
     ? (address ?? "")
     : (activeExternalWalletSession?.address ?? "");
+  const preferredDestinationWalletAddress =
+    destinationChainType === "EVM"
+      ? (address ?? "")
+      : (destinationExternalWalletSession?.address ?? "");
   const sourceWalletConnected = sourceChainUsesEvmWallet
     ? Boolean(address && isConnected)
     : Boolean(activeExternalWalletSession?.address);
   const sourceWalletLabel = sourceChainUsesEvmWallet
     ? "EVM Wallet"
     : activeExternalWalletSession?.label ?? getChainTypeDisplayLabel(sourceChainType);
+  const destinationWalletLabel =
+    destinationChainType === "EVM"
+      ? "EVM Wallet"
+      : destinationExternalWalletSession?.label ?? getChainTypeDisplayLabel(destinationChainType);
   const destinationAddressPlaceholder = getDestinationAddressPlaceholder(destinationChainType);
   const destinationAddressValidationCopy = getAddressValidationCopy(destinationChainType);
   const canExecuteSelectedSourceChain = canExecuteSourceChainType(sourceChainType);
   const walletConnectButtonCopy = getWalletConnectLabel(sourceChainType);
+  const hasPreferredDestinationWalletAddress = Boolean(
+    preferredDestinationWalletAddress &&
+      validateAddressForChainType(destinationChainType, preferredDestinationWalletAddress),
+  );
 
   const srcChainItems = useMemo<InlineOptionItem[]>(
     () =>
@@ -1157,6 +2600,97 @@ export function BridgeApp() {
         };
       }),
     [destinationTokens, dstTokenAddress, stargateTokenDetailsById, tokenDisplaySource],
+  );
+
+  const customOftSrcTokenItems = useMemo<InlineOptionItem[]>(
+    () =>
+      customOftConfigs.flatMap((config) => {
+        const deployment = config.deployments[srcChainKey];
+        if (!deployment) return [];
+        const address = deployment.tokenAddress ?? deployment.oftAddress;
+        const symbol = config.symbol;
+        const isSelected =
+          selectedCustomOftConfigId === config.id &&
+          selectedCustomOftSrcChainKey === srcChainKey &&
+          srcTokenAddress.toLowerCase() === address.toLowerCase();
+        return [
+          {
+            key: `custom-oft:${config.id}`,
+            badgeText: symbol,
+            iconUrl: getStargateTokenIconUrl(symbol),
+            title: symbol,
+            subtitle: config.name,
+            meta: "OFT",
+            searchTerms: [symbol, config.name, address, srcChainKey],
+            selected: isSelected,
+            onSelect: () => {
+              setSrcTokenAddress(address);
+              setSelectedCustomOftConfigId(config.id);
+              setSelectedCustomOftSrcChainKey(srcChainKey);
+              setSelectedCustomOftDstChainKey("");
+              setDstChainKey("");
+            },
+          },
+        ];
+      }),
+    [
+      customOftConfigs,
+      srcChainKey,
+      selectedCustomOftConfigId,
+      selectedCustomOftSrcChainKey,
+      srcTokenAddress,
+    ],
+  );
+
+  const customOftDstChainItems = useMemo<InlineOptionItem[]>(
+    () =>
+      customOftRuntimeDestinationChains.map((chain) => ({
+        key: chain.chainKey,
+        badgeText: chain.shortName,
+        iconUrl: getStargateChainIconUrl(chain.chainKey),
+        title: chain.name,
+        subtitle: `${chain.shortName} · ${getChainTypeDisplayLabel(chain.chainType)}`,
+        meta: chain.nativeCurrency.symbol,
+        searchTerms: [
+          chain.chainKey,
+          chain.name,
+          chain.shortName,
+          chain.nativeCurrency.symbol,
+          chain.chainType,
+        ],
+        selected: chain.chainKey === dstChainKey,
+        onSelect: () => {
+          setDstChainKey(chain.chainKey);
+          setSelectedCustomOftDstChainKey(chain.chainKey);
+        },
+      })),
+    [customOftRuntimeDestinationChains, dstChainKey],
+  );
+
+  const customOftDstTokenItems = useMemo<InlineOptionItem[]>(
+    () => {
+      if (!customOftDestinationToken) return [];
+      const symbol = customOftDestinationTokenSymbol;
+      return [
+        {
+          key: `custom-oft-dst:${selectedCustomOftConfigId}:${dstChainKey}`,
+          badgeText: symbol,
+          iconUrl: customOftDestinationTokenIconUrl,
+          title: symbol,
+          subtitle: selectedCustomOftConfig?.name,
+          selected: true,
+          onSelect: () => {},
+        },
+      ];
+    },
+    [
+      customOftDestinationToken,
+      customOftDestinationTokenSymbol,
+      customOftDestinationTokenIconUrl,
+      selectedCustomOftConfigId,
+      dstChainKey,
+      selectedCustomOftConfig,
+    ],
   );
 
   const quoteRequestState = useMemo(() => {
@@ -1265,18 +2799,19 @@ export function BridgeApp() {
   const balanceEnabled = Boolean(
     sourceChainUsesEvmWallet &&
       address &&
-      srcChain &&
-      selectedSrcToken &&
-      chainId === srcChain.chainId &&
+      activeSrcChain &&
+      activeBalanceToken &&
+      chainId === activeSrcChain.chainId &&
       isConnected,
   );
-  const supportedSrcChainId = srcChain?.chainId as SupportedChainId | undefined;
+  const supportedSrcChainId = activeSrcChain?.chainId as SupportedChainId | undefined;
 
   const nativeBalanceQuery = useBalance({
     address: address as Address | undefined,
     chainId: supportedSrcChainId,
     query: {
-      enabled: balanceEnabled && Boolean(selectedSrcToken && isNativeToken(selectedSrcToken.address)),
+      enabled:
+        balanceEnabled && Boolean(activeBalanceToken && isNativeToken(activeBalanceToken.address)),
       staleTime: 15 * 1000,
       refetchOnWindowFocus: false,
     },
@@ -1284,32 +2819,34 @@ export function BridgeApp() {
 
   const erc20BalanceQuery = useReadContract({
     address:
-      selectedSrcToken && !isNativeToken(selectedSrcToken.address)
-        ? (selectedSrcToken.address as Address)
+      activeBalanceToken && !isNativeToken(activeBalanceToken.address)
+        ? (activeBalanceToken.address as Address)
         : undefined,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: address ? [address as Address] : undefined,
     chainId: supportedSrcChainId,
     query: {
-      enabled: balanceEnabled && Boolean(selectedSrcToken && !isNativeToken(selectedSrcToken.address)),
+      enabled:
+        balanceEnabled &&
+        Boolean(activeBalanceToken && !isNativeToken(activeBalanceToken.address)),
       staleTime: 15 * 1000,
       refetchOnWindowFocus: false,
     },
   });
 
   const selectedBalanceValue =
-    selectedSrcToken && isNativeToken(selectedSrcToken.address)
+    activeBalanceToken && isNativeToken(activeBalanceToken.address)
       ? nativeBalanceQuery.data?.value
       : erc20BalanceQuery.data;
 
   const isBalanceLoading =
-    selectedSrcToken && isNativeToken(selectedSrcToken.address)
+    activeBalanceToken && isNativeToken(activeBalanceToken.address)
       ? nativeBalanceQuery.isPending
       : erc20BalanceQuery.isPending;
 
   const balanceCopy = useMemo(() => {
-    if (!selectedSrcToken) {
+    if (!activeBalanceToken) {
       return "Select a token";
     }
 
@@ -1321,7 +2858,7 @@ export function BridgeApp() {
       return `${sourceWalletLabel} connected`;
     }
 
-    if (srcChain && chainId !== srcChain.chainId) {
+    if (activeSrcChain && chainId !== activeSrcChain.chainId) {
       return isSwitchPending ? "Switching..." : "Auto switching...";
     }
 
@@ -1331,24 +2868,24 @@ export function BridgeApp() {
 
     if (selectedBalanceValue !== undefined) {
       return `${Number(
-        formatUnits(selectedBalanceValue, selectedSrcToken.decimals),
+        formatUnits(selectedBalanceValue, activeBalanceToken.decimals),
       ).toLocaleString("en-US", {
         maximumFractionDigits: 6,
-      })} ${selectedSrcTokenSymbol}`;
+      })} ${activeBalanceTokenSymbol}`;
     }
 
     return "Unavailable";
   }, [
+    activeBalanceToken,
+    activeBalanceTokenSymbol,
+    activeSrcChain,
     chainId,
     isBalanceLoading,
     isSwitchPending,
     selectedBalanceValue,
-    selectedSrcToken,
-    selectedSrcTokenSymbol,
     sourceChainUsesEvmWallet,
     sourceWalletConnected,
     sourceWalletLabel,
-    srcChain,
     walletConnectButtonCopy,
   ]);
 
@@ -1464,8 +3001,220 @@ export function BridgeApp() {
     });
   }
 
+  function openCreateCustomOftConfig() {
+    const defaultSourceChainKey =
+      customOftSourceChains.find((chain) => chain.chainKey === srcChainKey)?.chainKey ??
+      customOftSourceChains[0]?.chainKey ??
+      supportedChains[0]?.chainKey ??
+      "";
+    const defaultDestinationChainKey =
+      supportedChains.find(
+        (chain) => chain.chainKey === dstChainKey && chain.chainKey !== defaultSourceChainKey,
+      )?.chainKey ??
+      supportedChains.find((chain) => chain.chainKey !== defaultSourceChainKey)?.chainKey ??
+      "";
+
+    setCustomOftConfigDraft({
+      json: createCustomOftJsonTemplate(defaultSourceChainKey, defaultDestinationChainKey),
+    });
+    setCustomOftConfigError(null);
+  }
+
+  function openEditCustomOftConfig() {
+    if (!selectedCustomOftConfig) {
+      return;
+    }
+
+    setCustomOftConfigDraft(toCustomOftConfigDraft(selectedCustomOftConfig));
+    setCustomOftConfigError(null);
+  }
+
+  function closeCustomOftConfigModal() {
+    setCustomOftConfigDraft(null);
+    setCustomOftConfigError(null);
+  }
+
+  function handleCustomOftConfigSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!customOftConfigDraft) {
+      return;
+    }
+
+    try {
+      const parsedConfigs = dedupeCustomOftConfigs(
+        parseStoredCustomOftConfigs(customOftConfigDraft.json),
+      );
+
+      if (!parsedConfigs.length) {
+        throw new Error("No valid OFT meshes were found in this JSON.");
+      }
+
+      const validationError = validateCustomOftConfigs(parsedConfigs, chainByKey);
+
+      if (validationError) {
+        throw new Error(validationError);
+      }
+
+      if (customOftConfigDraft.id) {
+        if (parsedConfigs.length !== 1) {
+          throw new Error("Edit mode expects exactly one OFT mesh in LayerZero /list format.");
+        }
+
+        const upsertedConfig = upsertCustomOftConfig(customOftConfigs, {
+          ...parsedConfigs[0],
+          id: customOftConfigDraft.id,
+        });
+
+        setCustomOftConfigs(upsertedConfig.configs);
+        setSelectedCustomOftConfigId(upsertedConfig.storedConfig.id);
+        setCustomOftConfigError(null);
+        setCustomOftConfigDraft(null);
+        pushExecutionNotification({
+          tone: "success",
+          title:
+            upsertedConfig.mode === "created"
+              ? "Custom OFT saved"
+              : "Custom OFT updated",
+          message: `${upsertedConfig.storedConfig.name} · ${Object.keys(upsertedConfig.storedConfig.deployments).length} chains`,
+        });
+      } else {
+        const mergedConfigs = mergeImportedCustomOftConfigs(customOftConfigs, parsedConfigs);
+
+        if (!mergedConfigs.createdCount && !mergedConfigs.updatedCount) {
+          throw new Error("No new or updated custom OFT configs were detected.");
+        }
+
+        setCustomOftConfigs(mergedConfigs.configs);
+        setSelectedCustomOftConfigId(mergedConfigs.configs[0]?.id ?? "");
+        setCustomOftConfigError(null);
+        setCustomOftConfigDraft(null);
+        pushExecutionNotification({
+          tone: "success",
+          title: "Custom OFT saved",
+          message: `${mergedConfigs.createdCount} created · ${mergedConfigs.updatedCount} updated`,
+        });
+      }
+
+    } catch (error) {
+      setCustomOftConfigError(getErrorMessage(error));
+    }
+  }
+
+  function handleDeleteCustomOftConfig() {
+    if (!selectedCustomOftConfig) {
+      return;
+    }
+
+    if (!window.confirm(`Delete custom OFT config "${selectedCustomOftConfig.name}"?`)) {
+      return;
+    }
+
+    setCustomOftConfigs((current) =>
+      current.filter((config) => config.id !== selectedCustomOftConfig.id),
+    );
+  }
+
+  function handleExportCustomOftConfigs() {
+    if (!customOftConfigs.length) {
+      pushExecutionNotification({
+        tone: "danger",
+        title: "No custom OFTs",
+        message: "Add at least one custom OFT config before exporting.",
+      });
+      return;
+    }
+
+    const blob = new Blob([JSON.stringify(serializeCustomOftConfigs(customOftConfigs), null, 2)], {
+      type: "application/json",
+    });
+    const objectUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = objectUrl;
+    link.download = `earthbound-custom-oft-configs-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    window.URL.revokeObjectURL(objectUrl);
+    pushExecutionNotification({
+      tone: "success",
+      title: "Configs exported",
+      message: `${customOftConfigs.length} custom OFT config(s).`,
+    });
+  }
+
+  function openImportCustomOftConfigs() {
+    customOftImportInputRef.current?.click();
+  }
+
+  async function handleImportCustomOftConfigs(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const importedConfigs = dedupeCustomOftConfigs(parseStoredCustomOftConfigs(text));
+
+      if (!importedConfigs.length) {
+        throw new Error("No valid custom OFT configs were found in this file.");
+      }
+
+      const validationError = validateCustomOftConfigs(importedConfigs, chainByKey);
+
+      if (validationError) {
+        throw new Error(validationError);
+      }
+
+      const mergedConfigs = mergeImportedCustomOftConfigs(customOftConfigs, importedConfigs);
+
+      if (!mergedConfigs.createdCount && !mergedConfigs.updatedCount) {
+        throw new Error("No new or updated custom OFT configs were detected.");
+      }
+
+      setCustomOftConfigs(mergedConfigs.configs);
+      setSelectedCustomOftConfigId(mergedConfigs.configs[0]?.id ?? "");
+      pushExecutionNotification({
+        tone: "success",
+        title: "Configs imported",
+        message: `${mergedConfigs.createdCount} created · ${mergedConfigs.updatedCount} updated`,
+      });
+    } catch (error) {
+      pushExecutionNotification({
+        tone: "danger",
+        title: "Import failed",
+        message: getErrorMessage(error),
+        persistent: true,
+      });
+    }
+  }
+
+  function handleImportDiscoveredOftConfig(payload: OftDiscoveryImportPayload) {
+    const nextConfig: CustomOftConfig = {
+      id: createStableId(),
+      name: payload.name,
+      symbol: payload.symbol,
+      endpointVersion: payload.endpointVersion,
+      deployments: payload.deployments,
+    };
+    const upsertedConfig = upsertCustomOftConfig(customOftConfigs, nextConfig);
+
+    setCustomOftConfigs(upsertedConfig.configs);
+    setSelectedCustomOftConfigId(upsertedConfig.storedConfig.id);
+    pushExecutionNotification({
+      tone: "success",
+      title:
+        upsertedConfig.mode === "created"
+          ? "Custom OFT imported"
+          : "Custom OFT updated",
+      message: `${upsertedConfig.storedConfig.name} · ${Object.keys(upsertedConfig.storedConfig.deployments).length} chains`,
+    });
+  }
+
   async function handleConnectSourceWallet() {
-    if (!srcChain) {
+    if (!activeSrcChain) {
       return;
     }
 
@@ -1478,11 +3227,13 @@ export function BridgeApp() {
     }
 
     try {
-      if (srcChain.chainType === "EVM") {
-        throw new Error(`${srcChain.shortName} is not configured in the current EVM wallet adapter.`);
+      if (activeSrcChain.chainType === "EVM") {
+        throw new Error(
+          `${activeSrcChain.shortName} is not configured in the current EVM wallet adapter.`,
+        );
       }
 
-      await bridgeWallets.connectWallet(srcChain.chainType);
+      await bridgeWallets.connectWallet(activeSrcChain.chainType);
     } catch (error) {
       pushExecutionNotification({
         tone: "danger",
@@ -1494,7 +3245,7 @@ export function BridgeApp() {
   }
 
   async function handleDisconnectSourceWallet() {
-    if (!srcChain) {
+    if (!activeSrcChain) {
       return;
     }
 
@@ -1504,7 +3255,7 @@ export function BridgeApp() {
     }
 
     try {
-      await bridgeWallets.disconnectWallet(srcChain.chainType);
+      await bridgeWallets.disconnectWallet(activeSrcChain.chainType);
     } catch (error) {
       pushExecutionNotification({
         tone: "danger",
@@ -1538,6 +3289,85 @@ export function BridgeApp() {
       // Ignore storage failures.
     }
   }, []);
+
+  useEffect(() => {
+    try {
+      setCustomOftConfigs(
+        dedupeCustomOftConfigs(
+          parseStoredCustomOftConfigs(
+            window.localStorage.getItem(CUSTOM_OFT_CONFIGS_STORAGE_KEY),
+          ),
+        ),
+      );
+    } catch {
+      setCustomOftConfigs([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (customOftConfigs.length) {
+        window.localStorage.setItem(
+          CUSTOM_OFT_CONFIGS_STORAGE_KEY,
+          JSON.stringify(customOftConfigs),
+        );
+      } else {
+        window.localStorage.removeItem(CUSTOM_OFT_CONFIGS_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [customOftConfigs]);
+
+  useEffect(() => {
+    if (!customOftConfigs.length) {
+      setSelectedCustomOftConfigId("");
+      setSelectedCustomOftSrcChainKey("");
+      setSelectedCustomOftDstChainKey("");
+      return;
+    }
+
+    setSelectedCustomOftConfigId((current) => {
+      if (current && customOftConfigs.some((config) => config.id === current)) {
+        return current;
+      }
+
+      return customOftConfigs[0].id;
+    });
+  }, [customOftConfigs]);
+
+  useEffect(() => {
+    if (!selectedCustomOftConfig) {
+      setSelectedCustomOftSrcChainKey("");
+      return;
+    }
+
+    setSelectedCustomOftSrcChainKey((current) => {
+      if (current && customOftRuntimeSourceChains.some((chain) => chain.chainKey === current)) {
+        return current;
+      }
+
+      return customOftRuntimeSourceChains[0]?.chainKey ?? "";
+    });
+  }, [customOftRuntimeSourceChains, selectedCustomOftConfig]);
+
+  useEffect(() => {
+    if (!selectedCustomOftConfig) {
+      setSelectedCustomOftDstChainKey("");
+      return;
+    }
+
+    setSelectedCustomOftDstChainKey((current) => {
+      if (
+        current &&
+        customOftRuntimeDestinationChains.some((chain) => chain.chainKey === current)
+      ) {
+        return current;
+      }
+
+      return customOftRuntimeDestinationChains[0]?.chainKey ?? "";
+    });
+  }, [customOftRuntimeDestinationChains, selectedCustomOftConfig]);
 
   useEffect(() => {
     if (!supportedChains.length) {
@@ -1582,19 +3412,27 @@ export function BridgeApp() {
 
   useEffect(() => {
     setDestinationAddress((current) => {
-      if (!sourceWalletAddress) {
-        return current;
-      }
-
       if (current && validateAddressForChainType(destinationChainType, current)) {
         return current;
       }
 
-      return validateAddressForChainType(destinationChainType, sourceWalletAddress)
-        ? sourceWalletAddress
-        : current;
+      if (
+        preferredDestinationWalletAddress &&
+        validateAddressForChainType(destinationChainType, preferredDestinationWalletAddress)
+      ) {
+        return preferredDestinationWalletAddress;
+      }
+
+      if (
+        sourceWalletAddress &&
+        validateAddressForChainType(destinationChainType, sourceWalletAddress)
+      ) {
+        return sourceWalletAddress;
+      }
+
+      return current;
     });
-  }, [destinationChainType, sourceWalletAddress]);
+  }, [destinationChainType, preferredDestinationWalletAddress, sourceWalletAddress]);
 
   useEffect(() => {
     isQuotingRef.current = isQuoting;
@@ -1605,15 +3443,15 @@ export function BridgeApp() {
       !sourceChainUsesEvmWallet ||
       !address ||
       !isConnected ||
-      !srcChain ||
-      !selectedSrcToken ||
+      !activeSrcChain ||
+      !activeBalanceToken ||
       !chainId
     ) {
       balanceSwitchAttemptRef.current = null;
       return;
     }
 
-    if (chainId === srcChain.chainId) {
+    if (chainId === activeSrcChain.chainId) {
       balanceSwitchAttemptRef.current = null;
       return;
     }
@@ -1626,23 +3464,25 @@ export function BridgeApp() {
       return;
     }
 
-    const attemptKey = `${address}:${chainId}->${srcChain.chainId}`;
+    const attemptKey = `${address}:${chainId}->${activeSrcChain.chainId}`;
 
     if (balanceSwitchAttemptRef.current === attemptKey) {
       return;
     }
 
     balanceSwitchAttemptRef.current = attemptKey;
-    void switchChainAsync({ chainId: srcChain.chainId as SupportedChainId }).catch(() => undefined);
+    void switchChainAsync({ chainId: activeSrcChain.chainId as SupportedChainId }).catch(
+      () => undefined,
+    );
   }, [
+    activeBalanceToken,
+    activeSrcChain,
     address,
     chainId,
     executionState.phase,
     isConnected,
     isSwitchPending,
-    selectedSrcToken,
     sourceChainUsesEvmWallet,
-    srcChain,
     switchChainAsync,
   ]);
 
@@ -1699,6 +3539,10 @@ export function BridgeApp() {
   }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, bridgeApiProvider]);
 
   async function handleRequestQuote(mode: "auto" | "manual" | "refresh" = "manual") {
+    if (isCustomOftSource) {
+      return;
+    }
+
     if (!quoteRequestState.ready) {
       if (mode === "manual") {
         setQuoteError(quoteRequestState.reason);
@@ -1764,7 +3608,7 @@ export function BridgeApp() {
   });
 
   useEffect(() => {
-    if (!quoteRequestState.ready || executionState.phase === "running") {
+    if (isCustomOftSource || !quoteRequestState.ready || executionState.phase === "running") {
       return;
     }
 
@@ -1775,10 +3619,10 @@ export function BridgeApp() {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [executionState.phase, quoteRequestKey, quoteRequestState.ready]);
+  }, [isCustomOftSource, executionState.phase, quoteRequestKey, quoteRequestState.ready]);
 
   useEffect(() => {
-    if (!quoteRequestState.ready || executionState.phase === "running") {
+    if (isCustomOftSource || !quoteRequestState.ready || executionState.phase === "running") {
       return;
     }
 
@@ -1789,10 +3633,21 @@ export function BridgeApp() {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [executionState.phase, lastQuoteUpdatedAt, quoteRequestKey, quoteRequestState.ready]);
+  }, [
+    isCustomOftSource,
+    executionState.phase,
+    lastQuoteUpdatedAt,
+    quoteRequestKey,
+    quoteRequestState.ready,
+  ]);
 
   useEffect(() => {
-    if (!quoteRequestState.ready || executionState.phase === "running" || !lastQuoteUpdatedAt) {
+    if (
+      isCustomOftSource ||
+      !quoteRequestState.ready ||
+      executionState.phase === "running" ||
+      !lastQuoteUpdatedAt
+    ) {
       return;
     }
 
@@ -1803,7 +3658,13 @@ export function BridgeApp() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [executionState.phase, lastQuoteUpdatedAt, quoteRequestKey, quoteRequestState.ready]);
+  }, [
+    isCustomOftSource,
+    executionState.phase,
+    lastQuoteUpdatedAt,
+    quoteRequestKey,
+    quoteRequestState.ready,
+  ]);
 
   async function handleExecuteQuote() {
     if (!quote || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken) {
@@ -2141,13 +4002,293 @@ export function BridgeApp() {
     }
   }
 
-  const canRequestQuote = quoteRequestState.ready;
-  const canFillMax = Boolean(selectedSrcToken && selectedBalanceValue !== undefined);
+  const customOftRequestState = useMemo(() => {
+    if (!selectedCustomOftConfig) {
+      return {
+        ready: false,
+        reason: "Add a custom OFT config first.",
+      } as const;
+    }
+
+    if (!customOftRuntimeSourceChains.length) {
+      return {
+        ready: false,
+        reason: "This mesh has no executable EVM or Solana source deployment in this build.",
+      } as const;
+    }
+
+    if (!customOftSrcChain || !customOftDstChain) {
+      return {
+        ready: false,
+        reason: "Choose a source chain and destination chain from this mesh.",
+      } as const;
+    }
+
+    if (!sourceWalletAddress) {
+      return {
+        ready: false,
+        reason: `${getWalletConnectLabel(customOftSrcChain.chainType)} before executing this OFT.`,
+      } as const;
+    }
+
+    if (
+      !isCustomOftSupportedSourceChainType(customOftSrcChain.chainType)
+    ) {
+      return {
+        ready: false,
+        reason: "Custom OFT mode currently supports EVM and Solana source chains only.",
+      } as const;
+    }
+
+    if (!selectedCustomOftSourceDeployment || !selectedCustomOftDestinationDeployment) {
+      return {
+        ready: false,
+        reason: "Selected source or destination deployment is unavailable.",
+      } as const;
+    }
+
+    if (!hasLayerZeroApiKey) {
+      return {
+        ready: false,
+        reason: "Add a LayerZero API key to use custom OFT mode.",
+      } as const;
+    }
+
+    if (
+      !destinationAddress ||
+      !validateAddressForChainType(customOftDstChain.chainType, destinationAddress)
+    ) {
+      return {
+        ready: false,
+        reason: getAddressValidationCopy(customOftDstChain.chainType),
+      } as const;
+    }
+
+    try {
+      const parsedAmount = parseUnits(amountInput || "0", selectedCustomOftSourceDeployment.decimals);
+
+      if (parsedAmount <= BigInt(0)) {
+        return {
+          ready: false,
+          reason: "Amount must be greater than zero.",
+        } as const;
+      }
+
+      return {
+        ready: true,
+        reason: null,
+        payload: {
+          srcChainName: customOftSrcChain.chainKey,
+          dstChainName: customOftDstChain.chainKey,
+          srcAddress: selectedCustomOftSourceDeployment.oftAddress,
+          amount: parsedAmount.toString(),
+          from: sourceWalletAddress,
+          to: destinationAddress,
+          validate: true,
+        },
+      } as const;
+    } catch {
+      return {
+        ready: false,
+        reason: "Enter a valid amount.",
+      } as const;
+    }
+  }, [
+    amountInput,
+    customOftDstChain,
+    customOftSrcChain,
+    customOftRuntimeSourceChains.length,
+    destinationAddress,
+    hasLayerZeroApiKey,
+    selectedCustomOftConfig,
+    selectedCustomOftDestinationDeployment,
+    selectedCustomOftSourceDeployment,
+    sourceWalletAddress,
+  ]);
+
+  async function handleExecuteCustomOft() {
+    if (
+      !customOftRequestState.ready ||
+      !selectedCustomOftConfig ||
+      !customOftSrcChain ||
+      !customOftDstChain ||
+      !selectedCustomOftSourceDeployment ||
+      !selectedCustomOftDestinationDeployment
+    ) {
+      return;
+    }
+
+    const historyId = createStableId();
+    const initialAmountLabel = `${formatTokenAmount(
+      customOftRequestState.payload.amount,
+      selectedCustomOftSourceDeployment?.decimals ?? 18,
+    )} ${customOftSourceTokenSymbol}`;
+    const initialHistoryItem: ExecutionHistoryItem = {
+      id: historyId,
+      quoteId: `custom-oft:${selectedCustomOftConfig.id}:${customOftSrcChain.chainKey}:${customOftDstChain.chainKey}`,
+      phase: "running",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      routeLabel: `Custom OFT · ${selectedCustomOftConfig.name}`,
+      srcChainName: customOftSrcChain.shortName,
+      dstChainName: customOftDstChain.shortName,
+      srcChainIconUrl: getStargateChainIconUrl(customOftSrcChain.chainKey),
+      dstChainIconUrl: getStargateChainIconUrl(customOftDstChain.chainKey),
+      srcTokenSymbol: customOftSourceTokenSymbol,
+      dstTokenSymbol: customOftDestinationTokenSymbol,
+      srcTokenIconUrl: customOftSourceTokenIconUrl,
+      dstTokenIconUrl: customOftDestinationTokenIconUrl,
+      srcAmount: initialAmountLabel,
+      expectedDstAmount: `${amountInput || "0"} ${customOftDestinationTokenSymbol}`,
+      minimumDstAmount: null,
+      destinationAddress,
+      currentStep: "Building LayerZero OFT transaction",
+    };
+
+    prependExecutionHistoryItem(initialHistoryItem);
+    setExecutionState({
+      phase: "running",
+      activeHistoryId: historyId,
+    });
+    pushExecutionNotification({
+      tone: "neutral",
+      title: "Custom OFT started",
+      message: `${initialHistoryItem.srcChainName} to ${initialHistoryItem.dstChainName} · ${initialHistoryItem.srcAmount}`,
+    });
+
+    try {
+      const transferResponse = await fetchJson<LayerZeroOftTransferResponse>(
+        "/api/bridge/oft-transfer",
+        {
+          method: "POST",
+          headers: getBridgeApiRequestHeaders("layerzero", layerZeroApiKey),
+          body: JSON.stringify(customOftRequestState.payload),
+        },
+      );
+      const userSteps = buildCustomOftUserSteps(
+        customOftSrcChain,
+        transferResponse.transactionData,
+      );
+      let lastTxHash: string | undefined;
+
+      if (customOftSrcChain.chainType === "EVM") {
+        if (!address) {
+          throw new Error("Connect an EVM wallet before executing this OFT.");
+        }
+
+        if (chainId !== customOftSrcChain.chainId) {
+          updateExecutionHistoryItem(historyId, {
+            currentStep: `Switching wallet to ${customOftSrcChain.shortName}`,
+          });
+          await switchChainAsync({
+            chainId: customOftSrcChain.chainId as SupportedChainId,
+          });
+        }
+
+        for (const [index, step] of userSteps.entries()) {
+          if (!isTransactionStep(step)) {
+            throw new Error(`Unsupported custom OFT step ${index + 1}.`);
+          }
+
+          const payload = step.transaction?.encoded;
+
+          if (!payload?.to) {
+            throw new Error(`Custom OFT step ${index + 1} is missing transaction payload.`);
+          }
+
+          updateExecutionHistoryItem(historyId, {
+            currentStep: step.description ?? `Sending transaction step ${index + 1}`,
+          });
+
+          const hash = await sendTransaction(wagmiConfig, {
+            account: address as Address,
+            chainId: customOftSrcChain.chainId as SupportedChainId,
+            to: payload.to as Address,
+            data: payload.data,
+            value: payload.value ? BigInt(payload.value) : BigInt(0),
+            gas: payload.gasLimit ? BigInt(payload.gasLimit) : undefined,
+          });
+
+          lastTxHash = hash;
+          setExecutionState((current) => ({
+            ...current,
+            txHash: hash,
+          }));
+          updateExecutionHistoryItem(historyId, {
+            txHash: hash,
+            currentStep: "Transaction submitted",
+          });
+
+          await waitForTransactionReceipt(wagmiConfig, {
+            chainId: customOftSrcChain.chainId as SupportedChainId,
+            hash,
+          });
+        }
+      } else {
+        updateExecutionHistoryItem(historyId, {
+          currentStep: `Submitting ${getChainTypeDisplayLabel(customOftSrcChain.chainType)} transaction`,
+        });
+        lastTxHash = await bridgeWallets.executeUserSteps(customOftSrcChain.chainType, userSteps);
+      }
+
+      const explorerUrl = getLayerZeroScanUrl(lastTxHash);
+
+      setExecutionState({
+        phase: "success",
+        activeHistoryId: historyId,
+        txHash: lastTxHash,
+        transferStatus: "SOURCE_CONFIRMED",
+        explorerUrl,
+      });
+      updateExecutionHistoryItem(historyId, {
+        phase: "success",
+        txHash: lastTxHash,
+        transferStatus: "SOURCE_CONFIRMED",
+        explorerUrl,
+        currentStep: "Source transaction confirmed. Track destination settlement on LayerZeroScan.",
+      });
+      pushExecutionNotification({
+        tone: "success",
+        title: "Custom OFT submitted",
+        message: lastTxHash ? shortenAddress(lastTxHash) : initialHistoryItem.expectedDstAmount,
+      });
+
+      if (activeBalanceToken && isNativeToken(activeBalanceToken.address)) {
+        void nativeBalanceQuery.refetch();
+      } else {
+        void erc20BalanceQuery.refetch();
+      }
+    } catch (error) {
+      const errorMessage = getErrorMessage(error);
+
+      setExecutionState((current) => ({
+        ...current,
+        phase: "error",
+        activeHistoryId: historyId,
+        error: errorMessage,
+      }));
+      updateExecutionHistoryItem(historyId, {
+        phase: "error",
+        error: errorMessage,
+        currentStep: undefined,
+      });
+      pushExecutionNotification({
+        tone: "danger",
+        title: "Custom OFT failed",
+        message: errorMessage,
+        persistent: true,
+      });
+    }
+  }
+
+  const canRequestQuote = !isCustomOftSource && quoteRequestState.ready;
+  const canFillMax = Boolean(activeBalanceToken && selectedBalanceValue !== undefined);
   const quoteReady = Boolean(quote && selectedSrcToken && selectedDstToken);
   const destinationPreviewAmount =
     quote && selectedDstToken
       ? formatTokenAmount(quote.dstAmount, selectedDstToken.decimals)
       : "0.00";
+  const customOftDestinationPreviewAmount = amountInput.trim() || "0.00";
   const minimumReceiveCopy =
     quote && selectedDstToken && quote.dstAmountMin
       ? `${formatTokenAmount(quote.dstAmountMin, selectedDstToken.decimals)} ${selectedDstTokenSymbol}`
@@ -2158,6 +4299,12 @@ export function BridgeApp() {
       : null;
   const canExecuteQuote =
     Boolean(quote) &&
+    executionState.phase !== "running" &&
+    sourceWalletConnected &&
+    canExecuteSelectedSourceChain;
+  const canExecuteCustomOft =
+    isCustomOftSource &&
+    customOftRequestState.ready &&
     executionState.phase !== "running" &&
     sourceWalletConnected &&
     canExecuteSelectedSourceChain;
@@ -2188,23 +4335,43 @@ export function BridgeApp() {
   const walletConnectPending = sourceChainUsesEvmWallet
     ? isConnectPending
     : bridgeWallets.isPending;
-  const providerNoticeCopy = isLayerZeroFallback
-    ? "LayerZero key not provided. Falling back to Stargate v2 until you add one."
-    : null;
+  const providerNoticeCopy =
+    isCustomOftSource
+      ? !hasLayerZeroApiKey
+        ? "Custom OFT mode requires a LayerZero API key."
+        : customOftRequestState.reason
+      : isLayerZeroFallback
+        ? "LayerZero key not provided. Falling back to Stargate v2 until you add one."
+        : null;
   const executionCapabilityCopy =
-    srcChain && !canExecuteSelectedSourceChain
-      ? `${getChainTypeDisplayLabel(srcChain.chainType)} source execution is not available in this build yet.`
+    activeSrcChain && !canExecuteSelectedSourceChain
+      ? `${getChainTypeDisplayLabel(activeSrcChain.chainType)} source execution is not available in this build yet.`
       : null;
   function handleFillMax() {
-    if (!selectedSrcToken || selectedBalanceValue === undefined) {
+    if (!activeBalanceToken || selectedBalanceValue === undefined) {
       return;
     }
 
-    setAmountInput(formatUnits(selectedBalanceValue, selectedSrcToken.decimals));
+    setAmountInput(formatUnits(selectedBalanceValue, activeBalanceToken.decimals));
+  }
+
+  function handleFillDestinationFromConnectedWallet() {
+    if (!hasPreferredDestinationWalletAddress) {
+      return;
+    }
+
+    setDestinationAddress(preferredDestinationWalletAddress);
   }
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-[var(--background)] text-[var(--foreground)] xl:h-screen">
+      <input
+        ref={customOftImportInputRef}
+        type="file"
+        accept="application/json,.json"
+        onChange={handleImportCustomOftConfigs}
+        className="hidden"
+      />
       <div className="pointer-events-none absolute inset-x-0 top-0 h-56 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.14),transparent_55%)]" />
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent,rgba(255,255,255,0.025)_40%,transparent)]" />
 
@@ -2247,27 +4414,27 @@ export function BridgeApp() {
 
           <div className="flex flex-wrap items-center gap-2">
             <StatusPill tone="neutral">{supportedChains.length} Networks</StatusPill>
-            {srcChain ? (
+            {activeSrcChain ? (
               <StatusPill tone="neutral">
                 <span className="inline-flex items-center gap-1.5">
                   <AssetIcon
-                    label={srcChain.shortName}
-                    src={getStargateChainIconUrl(srcChain.chainKey)}
+                    label={activeSrcChain.shortName}
+                    src={getStargateChainIconUrl(activeSrcChain.chainKey)}
                     size="xs"
                   />
-                  From {srcChain.shortName}
+                  From {activeSrcChain.shortName}
                 </span>
               </StatusPill>
             ) : null}
-            {dstChain ? (
+            {activeDstChain ? (
               <StatusPill tone="neutral">
                 <span className="inline-flex items-center gap-1.5">
                   <AssetIcon
-                    label={dstChain.shortName}
-                    src={getStargateChainIconUrl(dstChain.chainKey)}
+                    label={activeDstChain.shortName}
+                    src={getStargateChainIconUrl(activeDstChain.chainKey)}
                     size="xs"
                   />
-                  To {dstChain.shortName}
+                  To {activeDstChain.shortName}
                 </span>
               </StatusPill>
             ) : null}
@@ -2311,6 +4478,29 @@ export function BridgeApp() {
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <button
                   type="button"
+                  onClick={() => setIsCustomOftSetupModalOpen(true)}
+                  className="group inline-flex items-center gap-3 rounded-[1.05rem] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-3 py-2 text-left transition hover:border-white/24 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05))]"
+                >
+                  <span
+                    className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold uppercase tracking-[0.18em] transition ${
+                      isCustomOftSource
+                        ? "border-white bg-white text-black"
+                        : "border-white/14 bg-black text-white"
+                    }`}
+                  >
+                    OFT
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-[9px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)] transition group-hover:text-white/60">
+                      Custom OFT
+                    </span>
+                    <span className="text-xs font-medium text-white">
+                      {customOftConfigs.length ? `${customOftConfigs.length} saved` : "Add config"}
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
                   onClick={handleToggleRouteSource}
                   aria-label={tokenDisplaySourceNextLabel}
                   title={tokenDisplaySourceNextLabel}
@@ -2330,8 +4520,12 @@ export function BridgeApp() {
                       Route Source
                     </span>
                     <span className="mt-0.5 flex items-center gap-2">
-                      <span className="text-xs font-medium text-white">{tokenDisplaySourceLabel}</span>
-                      <span className="text-[10px] text-[var(--muted)]">{tokenDisplaySourceSubcopy}</span>
+                      <span className="text-xs font-medium text-white">
+                        {tokenDisplaySourceLabel}
+                      </span>
+                      <span className="text-[10px] text-[var(--muted)]">
+                        {tokenDisplaySourceSubcopy}
+                      </span>
                     </span>
                   </span>
                   <span className="inline-flex h-7 items-center rounded-full border border-white/10 bg-black px-2.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/72 transition group-hover:border-white/20 group-hover:text-white">
@@ -2345,189 +4539,243 @@ export function BridgeApp() {
             </div>
 
             <div className="mt-3 grid min-h-0 gap-3 xl:grid-cols-2">
-              <div className={`${SURFACE_CARD_CLASS} grid min-h-0 grid-rows-[auto_minmax(0,1fr)] p-4`}>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
-                      From
-                    </p>
-                    <p className="mt-1 text-sm font-medium text-white">Origin</p>
-                  </div>
-
-                  <label className="block w-full max-w-[24rem] space-y-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
-                      Amount
-                    </span>
-                    <div className="rounded-[1.25rem] border border-white/10 bg-black px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        <input
-                          inputMode="decimal"
-                          placeholder="0.00"
-                          value={amountInput}
-                          onChange={(event) => setAmountInput(event.target.value)}
-                          className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-[1.7rem] font-medium tracking-[-0.05em] text-white outline-none placeholder:text-white/35"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleFillMax}
-                          disabled={!canFillMax}
-                          className="shrink-0 rounded-full border border-white/10 px-3 py-1.5 text-[11px] font-medium text-white/72 transition hover:border-white/24 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          Max
-                        </button>
+                  <div
+                    className={`${SURFACE_CARD_CLASS} grid min-h-0 grid-rows-[auto_minmax(0,1fr)] p-4`}
+                  >
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
+                          From
+                        </p>
+                        <p className="mt-1 text-sm font-medium text-white">Origin</p>
                       </div>
-                      <p className="mt-2 text-xs text-[var(--muted)]">
-                        <span className="mr-1">Balance</span>
-                        {selectedSrcToken ? (
-                          <InlineAssetLabel
-                            label={selectedSrcTokenSymbol}
-                            src={selectedSrcTokenIconUrl}
-                          >
-                            {balanceCopy}
-                          </InlineAssetLabel>
-                        ) : (
-                          balanceCopy
-                        )}
-                      </p>
+
+                      <label className="block w-full max-w-[24rem] space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+                          Amount
+                        </span>
+                        <div className="rounded-[1.25rem] border border-white/10 bg-black px-4 py-3">
+                          <div className="flex items-center gap-3">
+                            <input
+                              inputMode="decimal"
+                              placeholder="0.00"
+                              value={amountInput}
+                              onChange={(event) => setAmountInput(event.target.value)}
+                              className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-[1.7rem] font-medium tracking-[-0.05em] text-white outline-none placeholder:text-white/35"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleFillMax}
+                              disabled={!canFillMax}
+                              className="shrink-0 rounded-full border border-white/10 px-3 py-1.5 text-[11px] font-medium text-white/72 transition hover:border-white/24 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Max
+                            </button>
+                          </div>
+                          <p className="mt-2 text-xs text-[var(--muted)]">
+                            <span className="mr-1">Balance</span>
+                            {selectedSrcToken ? (
+                              <InlineAssetLabel
+                                label={selectedSrcTokenSymbol}
+                                src={selectedSrcTokenIconUrl}
+                              >
+                                {balanceCopy}
+                              </InlineAssetLabel>
+                            ) : (
+                              balanceCopy
+                            )}
+                          </p>
+                        </div>
+                      </label>
                     </div>
-                  </label>
-                </div>
 
-                <div className="mt-3 grid min-h-0 flex-1 gap-3 sm:grid-cols-2">
-                  <InlineOptionList
-                    key={`src-chain-${srcChainKey}`}
-                    title="Chain"
-                    items={srcChainItems}
-                    emptyState="No source chains."
-                    loadingLabel={chainsQuery.isPending ? "Loading chains..." : null}
-                  />
+                    <div className="mt-3 grid min-h-0 flex-1 gap-3 sm:grid-cols-2">
+                      <InlineOptionList
+                        key={`src-chain-${srcChainKey}`}
+                        title="Chain"
+                        items={srcChainItems}
+                        emptyState="No source chains."
+                        loadingLabel={chainsQuery.isPending ? "Loading chains..." : null}
+                      />
 
-                  <InlineOptionList
-                    key={`src-token-${srcChainKey}`}
-                    title="Token"
-                    items={srcTokenItems}
-                    emptyState={srcChainKey ? "No source tokens." : "Select a source chain."}
-                    loadingLabel={tokensQuery.isPending ? "Loading tokens..." : null}
-                  />
-                </div>
-              </div>
-
-              <div className={`${SURFACE_CARD_CLASS} grid min-h-0 grid-rows-[auto_minmax(0,1fr)] p-4`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
-                      To
-                    </p>
-                    <p className="mt-1 text-sm font-medium text-white">Destination</p>
+                      <InlineOptionList
+                        key={`src-token-${srcChainKey}`}
+                        title="Token"
+                        items={[...srcTokenItems, ...customOftSrcTokenItems]}
+                        emptyState={srcChainKey ? "No source tokens." : "Select a source chain."}
+                        loadingLabel={tokensQuery.isPending ? "Loading tokens..." : null}
+                      />
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
-                      Receive
-                    </p>
-                    <p className="mt-1.5 text-[1.65rem] font-medium tracking-[-0.05em] text-white">
-                      {destinationPreviewAmount}
-                    </p>
-                    <p className="text-sm text-[var(--muted)]">
-                      <InlineAssetLabel
-                        label={selectedDstTokenSymbol}
-                        src={selectedDstTokenIconUrl}
+
+                  <div
+                    className={`${SURFACE_CARD_CLASS} grid min-h-0 grid-rows-[auto_minmax(0,1fr)] p-4`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
+                          To
+                        </p>
+                        <p className="mt-1 text-sm font-medium text-white">Destination</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+                          Receive
+                        </p>
+                        <p className="mt-1.5 text-[1.65rem] font-medium tracking-[-0.05em] text-white">
+                          {isCustomOftSource ? customOftDestinationPreviewAmount : destinationPreviewAmount}
+                        </p>
+                        <p className="text-sm text-[var(--muted)]">
+                          <InlineAssetLabel
+                            label={isCustomOftSource ? customOftDestinationTokenSymbol : selectedDstTokenSymbol}
+                            src={isCustomOftSource ? customOftDestinationTokenIconUrl : selectedDstTokenIconUrl}
+                          >
+                            {isCustomOftSource ? customOftDestinationTokenSymbol : selectedDstTokenSymbol}
+                          </InlineAssetLabel>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid min-h-0 flex-1 gap-3 sm:grid-cols-2">
+                      <InlineOptionList
+                        key={`dst-chain-${srcChainKey}-${dstChainKey}`}
+                        title="Chain"
+                        items={isCustomOftSource ? customOftDstChainItems : dstChainItems}
+                        emptyState={isCustomOftSource ? "No OFT destination chains." : "No destination chains."}
+                        loadingLabel={chainsQuery.isPending ? "Loading chains..." : null}
+                      />
+
+                      <InlineOptionList
+                        key={`dst-token-${srcChainKey}-${srcTokenAddress}-${dstChainKey}`}
+                        title="Token"
+                        items={isCustomOftSource ? customOftDstTokenItems : dstTokenItems}
+                        emptyState={isCustomOftSource ? (dstChainKey ? "No OFT destination token." : "Select a destination chain.") : (dstChainKey ? "No destination tokens." : "Select a destination chain.")}
+                        loadingLabel={(!isCustomOftSource && routeTokensQuery.isPending) ? "Loading tokens..." : null}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {quoteError || providerNoticeCopy || executionCapabilityCopy ? (
+                  <div className="mt-3 rounded-[1.25rem] border border-white/18 bg-white/[0.04] px-4 py-3 text-sm text-white">
+                    {quoteError ?? providerNoticeCopy ?? executionCapabilityCopy}
+                  </div>
+                ) : null}
+
+                <div className="mt-3 flex flex-wrap items-start justify-between gap-2.5 rounded-[1.15rem] border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="grid gap-2.5 lg:grid-cols-[minmax(0,1.45fr)_minmax(12rem,0.8fr)]">
+                      <label className="block space-y-1.5">
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                            Destination address
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleFillDestinationFromConnectedWallet}
+                            disabled={!hasPreferredDestinationWalletAddress}
+                            className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/72 transition hover:text-white disabled:cursor-not-allowed disabled:text-white/30"
+                          >
+                            {hasPreferredDestinationWalletAddress
+                              ? `Use ${destinationWalletLabel}`
+                              : "No wallet"}
+                          </button>
+                        </span>
+                        <input
+                          placeholder={destinationAddressPlaceholder}
+                          value={destinationAddress}
+                          onChange={(event) => setDestinationAddress(event.target.value)}
+                          className={`${FIELD_CLASS} h-10 rounded-[1.05rem] px-3 py-2 text-xs`}
+                        />
+                      </label>
+
+                      <div className="rounded-[1.05rem] border border-white/10 bg-black px-3 py-2.5">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                          {isCustomOftSource ? "Receive" : "Min receive"}
+                        </p>
+                        <p className="mt-1.5 text-xs text-white">
+                          {isCustomOftSource ? (
+                            customOftDestinationToken ? (
+                              <InlineAssetLabel
+                                label={customOftDestinationTokenSymbol}
+                                src={customOftDestinationTokenIconUrl}
+                              >
+                                {customOftDestinationPreviewAmount} {customOftDestinationTokenSymbol}
+                              </InlineAssetLabel>
+                            ) : (
+                              "Select destination chain"
+                            )
+                          ) : selectedDstToken ? (
+                            <InlineAssetLabel
+                              label={selectedDstTokenSymbol}
+                              src={selectedDstTokenIconUrl}
+                            >
+                              {minimumReceiveCopy ?? "Awaiting quote"}
+                            </InlineAssetLabel>
+                          ) : (
+                            minimumReceiveCopy ?? "Awaiting quote"
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-nowrap items-center gap-2 self-start lg:justify-end">
+                    {isCustomOftSource ? (
+                      <button
+                        type="button"
+                        onClick={openLayerZeroApiKeyModal}
+                        className="inline-flex items-center justify-center whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] px-4 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08]"
                       >
-                        {selectedDstTokenSymbol}
-                      </InlineAssetLabel>
-                    </p>
+                        API Key
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void handleRequestQuote("manual")}
+                        disabled={!canRequestQuote || isQuoting}
+                        className="inline-flex items-center justify-center whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] px-4 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {refreshButtonCopy}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        isCustomOftSource ? void handleExecuteCustomOft() : void handleExecuteQuote()
+                      }
+                      disabled={isCustomOftSource ? !canExecuteCustomOft : !canExecuteQuote}
+                      className="inline-flex items-center justify-center whitespace-nowrap rounded-full bg-white px-4 py-2 text-xs font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {executionState.phase === "running" ? "Executing..." : "Execute"}
+                    </button>
                   </div>
                 </div>
-
-                <div className="mt-3 grid min-h-0 flex-1 gap-3 sm:grid-cols-2">
-                  <InlineOptionList
-                    key={`dst-chain-${srcChainKey}-${dstChainKey}`}
-                    title="Chain"
-                    items={dstChainItems}
-                    emptyState={srcChainKey ? "No destination chains." : "Select a source chain."}
-                    loadingLabel={chainsQuery.isPending ? "Loading chains..." : null}
-                  />
-
-                  <InlineOptionList
-                    key={`dst-token-${srcChainKey}-${srcTokenAddress}-${dstChainKey}`}
-                    title="Token"
-                    items={dstTokenItems}
-                    emptyState={srcTokenAddress ? "No destination tokens." : "Select a source token first."}
-                    loadingLabel={srcTokenAddress && routeTokensQuery.isPending ? "Loading routes..." : null}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {quoteError || providerNoticeCopy || executionCapabilityCopy ? (
-              <div className="mt-3 rounded-[1.25rem] border border-white/18 bg-white/[0.04] px-4 py-3 text-sm text-white">
-                {quoteError ?? providerNoticeCopy ?? executionCapabilityCopy}
-              </div>
-            ) : null}
-
-            <div className="mt-3 flex flex-wrap items-start justify-between gap-2.5 rounded-[1.15rem] border border-white/10 bg-white/[0.03] px-3 py-2.5">
-              <div className="min-w-0 flex-1">
-                <div className="grid gap-2.5 lg:grid-cols-[minmax(0,1.45fr)_minmax(12rem,0.8fr)]">
-                  <label className="block space-y-1.5">
-                    <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                      Destination address
-                    </span>
-                    <input
-                      placeholder={destinationAddressPlaceholder}
-                      value={destinationAddress}
-                      onChange={(event) => setDestinationAddress(event.target.value)}
-                      className={`${FIELD_CLASS} h-10 rounded-[1.05rem] px-3 py-2 text-xs`}
-                    />
-                  </label>
-
-                  <div className="rounded-[1.05rem] border border-white/10 bg-black px-3 py-2.5">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                      Min receive
-                    </p>
-                    <p className="mt-1.5 text-xs text-white">
-                      {selectedDstToken ? (
-                        <InlineAssetLabel
-                          label={selectedDstTokenSymbol}
-                          src={selectedDstTokenIconUrl}
-                        >
-                          {minimumReceiveCopy ?? "Awaiting quote"}
-                        </InlineAssetLabel>
-                      ) : (
-                        minimumReceiveCopy ?? "Awaiting quote"
-                      )}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex flex-nowrap items-center gap-2 self-start lg:justify-end">
-                <button
-                  type="button"
-                  onClick={() => void handleRequestQuote("manual")}
-                  disabled={!canRequestQuote || isQuoting}
-                  className="inline-flex items-center justify-center whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] px-4 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {refreshButtonCopy}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleExecuteQuote()}
-                  disabled={!canExecuteQuote}
-                  className="inline-flex items-center justify-center whitespace-nowrap rounded-full bg-white px-4 py-2 text-xs font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {executionState.phase === "running" ? "Executing..." : "Execute"}
-                </button>
-              </div>
-            </div>
           </section>
 
           <aside className="grid min-h-0 gap-3 rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.32)] backdrop-blur sm:p-4 xl:grid-rows-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
             <section id="quote" className="flex min-h-0 flex-col rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4">
               <div className="flex items-start justify-between gap-3">
-                <SectionHeading eyebrow="Quote" title={quoteReady ? "Routes" : "Awaiting"} />
-                {quote ? <StatusPill tone="neutral">{availableQuoteCount} route(s)</StatusPill> : null}
+                <SectionHeading
+                  eyebrow={isCustomOftSource ? "Custom OFT" : "Quote"}
+                  title={
+                    isCustomOftSource
+                      ? selectedCustomOftConfig
+                        ? "Saved Config"
+                        : "Awaiting"
+                      : quoteReady
+                        ? "Routes"
+                        : "Awaiting"
+                  }
+                />
+                {!isCustomOftSource && quote ? (
+                  <StatusPill tone="neutral">{availableQuoteCount} route(s)</StatusPill>
+                ) : isCustomOftSource && selectedCustomOftConfig ? (
+                  <StatusPill tone="neutral">Direct API</StatusPill>
+                ) : null}
               </div>
 
-              {quoteReady && quote && selectedSrcToken && selectedDstToken ? (
+              {!isCustomOftSource && quoteReady && quote && selectedSrcToken && selectedDstToken ? (
                 <div className="mt-4 flex min-h-0 flex-1 flex-col">
                   <div className="min-h-0 flex-1 space-y-2 overflow-auto pr-1">
                     {quotes.map((candidate, index) => {
@@ -2612,6 +4860,73 @@ export function BridgeApp() {
                     })}
                   </div>
                 </div>
+              ) : isCustomOftSource ? (
+                selectedCustomOftConfig ? (
+                  <div className="mt-4 flex min-h-0 flex-1 flex-col gap-3">
+                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                        Config
+                      </p>
+                      <p className="mt-2 text-sm font-medium text-white">
+                        {selectedCustomOftConfig.name} · {selectedCustomOftConfig.symbol}
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--muted)]">
+                        {selectedCustomOftDeployments.length} chains ·{" "}
+                        {customOftRuntimeSourceChains.length} executable source chain(s)
+                      </p>
+                    </div>
+                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                        Route
+                      </p>
+                      <p className="mt-2 text-sm text-white">
+                        {customOftSrcChain?.shortName ?? "Select source"} to{" "}
+                        {customOftDstChain?.shortName ?? "Select destination"}
+                      </p>
+                    </div>
+                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                        Source OFT
+                      </p>
+                      <p className="mt-2 break-all text-sm text-white">
+                        {selectedCustomOftSourceDeployment?.oftAddress ?? "Select a source chain"}
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--muted)]">
+                        {selectedCustomOftSourceDeployment
+                          ? `${selectedCustomOftSourceDeployment.decimals} decimals${
+                              selectedCustomOftSourceDeployment.approvalRequired
+                                ? " · approval required"
+                                : ""
+                            }`
+                          : "Approval and send calldata are built from this selected deployment."}
+                      </p>
+                    </div>
+                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                        Destination OFT
+                      </p>
+                      <p className="mt-2 break-all text-sm text-white">
+                        {selectedCustomOftDestinationDeployment?.oftAddress ??
+                          "Select a destination chain"}
+                      </p>
+                    </div>
+                    <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                        Receive
+                      </p>
+                      <p className="mt-2 text-sm text-white">
+                        {customOftDestinationPreviewAmount} {customOftDestinationTokenSymbol}
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--muted)]">
+                        Approval and send calldata are built just-in-time from LayerZero OFT API.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-[1.25rem] border border-dashed border-white/12 bg-black/40 px-4 py-3 text-sm text-[var(--muted)]">
+                    Select or create a custom OFT config to enable direct execution.
+                  </div>
+                )
               ) : (
                 <div className="mt-4 rounded-[1.25rem] border border-dashed border-white/12 bg-black/40 px-4 py-3 text-sm text-[var(--muted)]">
                   {isQuoting ? "Requesting live quote..." : "Fill the route to start live quotes."}
@@ -2775,6 +5090,28 @@ export function BridgeApp() {
         </main>
       </div>
 
+      {isCustomOftSetupModalOpen ? (
+        <CustomOftSetupModal
+          configs={customOftConfigs}
+          selectedConfigId={selectedCustomOftConfigId}
+          onSelectConfig={setSelectedCustomOftConfigId}
+          onDiscoverMetadata={() => {
+            setIsCustomOftSetupModalOpen(false);
+            setIsOftDiscoveryModalOpen(true);
+          }}
+          onManualJson={() => {
+            setIsCustomOftSetupModalOpen(false);
+            openCreateCustomOftConfig();
+          }}
+          onExport={handleExportCustomOftConfigs}
+          onImport={() => {
+            setIsCustomOftSetupModalOpen(false);
+            openImportCustomOftConfigs();
+          }}
+          onDelete={handleDeleteCustomOftConfig}
+          onClose={() => setIsCustomOftSetupModalOpen(false)}
+        />
+      ) : null}
       {isLayerZeroApiKeyModalOpen ? (
         <LayerZeroApiKeyModal
           apiKey={layerZeroApiKeyDraft}
@@ -2787,6 +5124,29 @@ export function BridgeApp() {
           }}
           onClose={closeLayerZeroApiKeyModal}
           onSubmit={handleLayerZeroApiKeySubmit}
+        />
+      ) : null}
+      {customOftConfigDraft ? (
+        <CustomOftConfigModal
+          draft={customOftConfigDraft}
+          error={customOftConfigError}
+          onChange={(patch) => {
+            setCustomOftConfigDraft((current) => (current ? { ...current, ...patch } : current));
+            if (customOftConfigError) {
+              setCustomOftConfigError(null);
+            }
+          }}
+          onClose={closeCustomOftConfigModal}
+          onSubmit={handleCustomOftConfigSubmit}
+        />
+      ) : null}
+      {isOftDiscoveryModalOpen ? (
+        <OftDiscoveryModal
+          sourceChains={customOftSourceChains}
+          destinationChains={supportedChains}
+          existingConfigs={customOftConfigs}
+          onClose={() => setIsOftDiscoveryModalOpen(false)}
+          onImport={handleImportDiscoveredOftConfig}
         />
       ) : null}
 

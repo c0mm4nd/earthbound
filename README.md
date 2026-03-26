@@ -8,6 +8,7 @@ This repository contains the Next.js application and its thin server-side proxy 
 
 - Stargate-aligned UX focused on fast route selection and execution
 - Optional switch from Stargate-backed routing to the LayerZero Direct API
+- User-managed custom OFT configs for direct LayerZero OFT transfers
 - Automatic live quotes with periodic refresh
 - Route comparison and selection in a single-page interface
 - Execution tracking with transfer history and LayerZeroScan links
@@ -42,6 +43,20 @@ If the user switches to LayerZero mode but does not provide an API key, Earthbou
 
 This keeps part of the routing surface available without requiring a direct LayerZero API key. When a route is unavailable in fallback mode, the upstream response makes that limitation explicit.
 
+### 4. Custom OFT Mode
+
+Users can save custom OFT meshes in the browser and execute them directly.
+
+- Each saved config is one OFT asset mesh containing deployments across chains rather than one fixed source-to-destination pair
+- At execution time, the user picks source and destination chains from the deployments stored in that mesh
+- Each deployment stores its chain, OFT address, optional spend token address, local decimals, optional approval flag, and optional type
+- The UI now splits custom OFT sourcing into two paths: discovery from LayerZero metadata and manual JSON entry
+- Manual JSON uses the same shape as LayerZero `GET /list`, so discovery results, pasted JSON, exported JSON, and edited JSON all share one format
+- Saved custom OFT configs can be exported and re-imported as LayerZero-style JSON, and older pair-style JSON is still migrated when loaded
+- Requests are routed through `https://metadata.layerzero-api.com/v1/metadata/experiment/ofts/transfer`
+- The app builds approval and send transactions from LayerZero's OFT API rather than the quote aggregation API
+- Current direct execution scope for this mode is EVM and Solana source routes, with destination chains following the app's supported address formats
+
 ## How It Works
 
 The project is split into three main layers:
@@ -56,6 +71,8 @@ Primary integration points:
 - Tokens: `/api/bridge/tokens`
 - Token details: `/api/bridge/token-details`
 - Quotes: `/api/bridge/quotes`
+- Custom OFT discovery: `/api/bridge/oft-list`
+- Custom OFT transfer builder: `/api/bridge/oft-transfer`
 - Build user steps: `/api/bridge/build-user-steps`
 - Submit signature: `/api/bridge/submit-signature`
 - Transfer status: `/api/bridge/status/[quoteId]`
