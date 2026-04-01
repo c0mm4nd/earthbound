@@ -267,28 +267,6 @@ function formatTimeLabel(timestamp: number) {
   }).format(timestamp);
 }
 
-function formatEtaLabel(timestamp: number) {
-  const eta = new Date(timestamp);
-  const now = new Date();
-  const isSameDay =
-    eta.getFullYear() === now.getFullYear() &&
-    eta.getMonth() === now.getMonth() &&
-    eta.getDate() === now.getDate();
-  const formatterOptions: Intl.DateTimeFormatOptions = isSameDay
-    ? {
-        hour: "2-digit",
-        minute: "2-digit",
-      }
-    : {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      };
-
-  return new Intl.DateTimeFormat("en-US", formatterOptions).format(timestamp);
-}
-
 function formatTokenAmount(value: string | undefined, decimals: number, digits = 6) {
   if (!value) {
     return "0";
@@ -403,14 +381,14 @@ function formatUsd(value: number | string | undefined) {
   }).format(numeric);
 }
 
-function formatEstimatedSeconds(seconds: number | undefined | null) {
-  const numeric = seconds;
+function formatEstimatedDuration(milliseconds: number | undefined | null) {
+  const numeric = milliseconds;
 
   if (!numeric || !Number.isFinite(numeric)) {
     return "Unknown";
   }
 
-  const minutes = Math.round(numeric / 60);
+  const minutes = Math.round(numeric / 60_000);
 
   if (minutes < 1) {
     return "< 1 min";
@@ -431,41 +409,16 @@ function formatQuoteEstimate(estimated: string | number | undefined | null) {
     return "Timing unknown";
   }
 
-  if (typeof estimated === "number") {
-    if (!Number.isFinite(estimated) || estimated <= 0) {
-      return "Timing unknown";
-    }
+  const numeric = typeof estimated === "string" ? Number(estimated.trim()) : estimated;
 
-    if (estimated >= 1e12) {
-      return `ETA ${formatEtaLabel(estimated)}`;
-    }
-
-    if (estimated >= 1e9) {
-      return `ETA ${formatEtaLabel(estimated * 1000)}`;
-    }
-
-    return `Est. ${formatEstimatedSeconds(estimated)}`;
-  }
-
-  const trimmed = estimated.trim();
-
-  if (!trimmed) {
+  if (!Number.isFinite(numeric) || numeric <= 0) {
     return "Timing unknown";
   }
 
-  const numeric = Number(trimmed);
+  // VT/v2 quote APIs return milliseconds. Keep a small-value fallback for legacy second-based shapes.
+  const durationMs = numeric >= 1_000 ? numeric : numeric * 1_000;
 
-  if (Number.isFinite(numeric)) {
-    return formatQuoteEstimate(numeric);
-  }
-
-  const timestamp = Date.parse(trimmed);
-
-  if (Number.isFinite(timestamp)) {
-    return `ETA ${formatEtaLabel(timestamp)}`;
-  }
-
-  return "Timing unknown";
+  return `Est. ${formatEstimatedDuration(durationMs)}`;
 }
 
 function getErrorMessage(error: unknown) {
