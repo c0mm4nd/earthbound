@@ -117,6 +117,8 @@ const GHOST_BUTTON_CLASS =
   "inline-flex items-center justify-center rounded-full border border-white/12 bg-white/[0.04] px-5 py-3 text-sm font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50";
 const PRIMARY_BUTTON_CLASS =
   "inline-flex items-center justify-center rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50";
+const ICON_BUTTON_CLASS =
+  "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white";
 
 type ExecutionPhase = "idle" | "running" | "success" | "error";
 
@@ -265,6 +267,28 @@ function formatTimeLabel(timestamp: number) {
   }).format(timestamp);
 }
 
+function formatEtaLabel(timestamp: number) {
+  const eta = new Date(timestamp);
+  const now = new Date();
+  const isSameDay =
+    eta.getFullYear() === now.getFullYear() &&
+    eta.getMonth() === now.getMonth() &&
+    eta.getDate() === now.getDate();
+  const formatterOptions: Intl.DateTimeFormatOptions = isSameDay
+    ? {
+        hour: "2-digit",
+        minute: "2-digit",
+      }
+    : {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      };
+
+  return new Intl.DateTimeFormat("en-US", formatterOptions).format(timestamp);
+}
+
 function formatTokenAmount(value: string | undefined, decimals: number, digits = 6) {
   if (!value) {
     return "0";
@@ -379,8 +403,8 @@ function formatUsd(value: number | string | undefined) {
   }).format(numeric);
 }
 
-function formatEstimatedSeconds(seconds: string | number | undefined | null) {
-  const numeric = typeof seconds === "string" ? Number(seconds) : seconds;
+function formatEstimatedSeconds(seconds: number | undefined | null) {
+  const numeric = seconds;
 
   if (!numeric || !Number.isFinite(numeric)) {
     return "Unknown";
@@ -400,6 +424,48 @@ function formatEstimatedSeconds(seconds: string | number | undefined | null) {
   const remainder = minutes % 60;
 
   return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function formatQuoteEstimate(estimated: string | number | undefined | null) {
+  if (estimated === undefined || estimated === null) {
+    return "Timing unknown";
+  }
+
+  if (typeof estimated === "number") {
+    if (!Number.isFinite(estimated) || estimated <= 0) {
+      return "Timing unknown";
+    }
+
+    if (estimated >= 1e12) {
+      return `ETA ${formatEtaLabel(estimated)}`;
+    }
+
+    if (estimated >= 1e9) {
+      return `ETA ${formatEtaLabel(estimated * 1000)}`;
+    }
+
+    return `Est. ${formatEstimatedSeconds(estimated)}`;
+  }
+
+  const trimmed = estimated.trim();
+
+  if (!trimmed) {
+    return "Timing unknown";
+  }
+
+  const numeric = Number(trimmed);
+
+  if (Number.isFinite(numeric)) {
+    return formatQuoteEstimate(numeric);
+  }
+
+  const timestamp = Date.parse(trimmed);
+
+  if (Number.isFinite(timestamp)) {
+    return `ETA ${formatEtaLabel(timestamp)}`;
+  }
+
+  return "Timing unknown";
 }
 
 function getErrorMessage(error: unknown) {
@@ -1594,13 +1660,19 @@ function SectionHeading({
   compact?: boolean;
 }) {
   return (
-    <div className={compact ? "space-y-0.5" : "space-y-2"}>
+    <div className={compact ? "min-w-0 space-y-0.5" : "min-w-0 space-y-2"}>
       <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
         {eyebrow}
       </p>
       <h2 className={`font-medium tracking-[-0.03em] text-white ${compact ? "text-sm" : "text-lg"}`}>{title}</h2>
       {description ? (
-        <p className={`max-w-2xl leading-6 text-[var(--muted)] ${compact ? "text-xs" : "text-sm"}`}>{description}</p>
+        <p
+          className={`max-w-2xl break-words leading-6 text-[var(--muted)] ${
+            compact ? "text-xs" : "text-sm"
+          }`}
+        >
+          {description}
+        </p>
       ) : null}
     </div>
   );
@@ -1665,7 +1737,7 @@ function InlineAssetLabel({
   className?: string;
 }) {
   return (
-    <span className={`inline-flex items-center gap-1.5 ${className}`.trim()}>
+    <span className={`inline-flex min-w-0 max-w-full items-center gap-1.5 ${className}`.trim()}>
       <AssetIcon label={label} src={src} size={size} />
       {children}
     </span>
@@ -1810,10 +1882,10 @@ function LayerZeroApiKeyModal({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-sm text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white"
+            className={ICON_BUTTON_CLASS}
             aria-label="Close LayerZero API key dialog"
           >
-            ×
+            <XIcon />
           </button>
         </div>
 
@@ -1885,10 +1957,10 @@ function CustomOftConfigModal({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-sm text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white"
+            className={ICON_BUTTON_CLASS}
             aria-label="Close custom OFT config dialog"
           >
-            ×
+            <XIcon />
           </button>
         </div>
 
@@ -2063,10 +2135,10 @@ function OftDiscoveryModal({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-sm text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white"
+            className={ICON_BUTTON_CLASS}
             aria-label="Close OFT discovery dialog"
           >
-            ×
+            <XIcon />
           </button>
         </div>
 
@@ -2243,10 +2315,10 @@ function CustomOftSetupModal({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-sm text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white"
+            className={ICON_BUTTON_CLASS}
             aria-label="Close custom OFT setup"
           >
-            ×
+            <XIcon />
           </button>
         </div>
 
@@ -4678,14 +4750,6 @@ export function BridgeApp() {
     : null;
   const tokenDisplaySourceLabel =
     tokenDisplaySource === "stargate" ? "Stargate" : "LayerZero";
-  const tokenDisplaySourceSubcopy =
-    isCustomOftSource
-      ? "Local OFT build"
-      : tokenDisplaySource === "stargate"
-      ? "VT wrapper"
-      : hasLayerZeroApiKey
-        ? "Direct API · key ready"
-        : "Direct API · v2 fallback";
   const tokenDisplaySourceNextLabel =
     tokenDisplaySource === "stargate" ? "Switch to LayerZero" : "Switch to Stargate";
   const walletConnectPending = sourceChainUsesEvmWallet
@@ -5120,8 +5184,8 @@ export function BridgeApp() {
                 </div>
           </section>
 
-          <aside className="grid min-h-0 gap-3 rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.32)] backdrop-blur sm:p-4 xl:grid-rows-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-            <section id="quote" className="flex min-h-0 flex-col rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4">
+          <aside className="grid min-h-0 min-w-0 gap-3 rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.32)] backdrop-blur sm:p-4 xl:grid-rows-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+            <section id="quote" className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4">
               <div className="flex items-start justify-between gap-3">
                 <SectionHeading
                   compact
@@ -5172,7 +5236,7 @@ export function BridgeApp() {
                                   isSelected ? "text-black/66" : "text-[var(--muted)]"
                                 }`}
                               >
-                                {formatEstimatedSeconds(candidate.duration?.estimated)} · Fee{" "}
+                                {formatQuoteEstimate(candidate.duration?.estimated)} · Fee{" "}
                                 {getQuoteFeeCopy(candidate)}
                               </p>
                             </div>
@@ -5313,10 +5377,10 @@ export function BridgeApp() {
               )}
             </section>
 
-            <section
-              id="history"
-              className="flex min-h-0 flex-col rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4"
-            >
+              <section
+                id="history"
+                className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4"
+              >
               <div className="flex items-start justify-between gap-3">
                 <SectionHeading
                   compact
@@ -5333,7 +5397,7 @@ export function BridgeApp() {
               </div>
 
               {executionHistory.length ? (
-                <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+                <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-x-hidden overflow-y-auto pr-1">
                   {executionHistory.map((item) => {
                     const itemTone = getExecutionTone(item.phase);
                     const isActive = item.id === executionState.activeHistoryId;
@@ -5341,7 +5405,7 @@ export function BridgeApp() {
                     return (
                       <article
                         key={item.id}
-                        className={`rounded-[1.25rem] border px-4 py-3 transition ${
+                        className={`min-w-0 rounded-[1.25rem] border px-4 py-3 transition ${
                           isActive
                             ? "border-white/20 bg-black"
                             : "border-white/10 bg-black/70"
@@ -5577,13 +5641,14 @@ export function BridgeApp() {
               <button
                 type="button"
                 onClick={() => dismissExecutionNotification(notification.id)}
-                className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] transition ${
+                className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition ${
                   notification.tone === "success"
                     ? "border-black/10 bg-black/10 text-black/70 hover:bg-black/15"
                     : "border-white/12 bg-white/[0.04] text-white/72 hover:border-white/24 hover:bg-white/[0.08]"
                 }`}
+                aria-label="Dismiss notification"
               >
-                Close
+                <XIcon />
               </button>
             </div>
           </div>
