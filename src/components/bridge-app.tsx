@@ -407,10 +407,11 @@ function formatEstimatedDuration(milliseconds: number | undefined | null) {
     return "Unknown";
   }
 
+  const seconds = Math.max(1, Math.round(numeric / 1_000));
   const minutes = Math.round(numeric / 60_000);
 
   if (minutes < 1) {
-    return "< 1 min";
+    return `${seconds}s`;
   }
 
   if (minutes < 60) {
