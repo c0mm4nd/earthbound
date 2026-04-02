@@ -381,6 +381,25 @@ function formatUsd(value: number | string | undefined) {
   }).format(numeric);
 }
 
+function formatFeeUsd(value: number | string | undefined) {
+  if (value === undefined) {
+    return null;
+  }
+
+  const numeric = typeof value === "string" ? Number(value) : value;
+
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits:
+      numeric >= 100 ? 2 : numeric >= 1 ? 4 : numeric >= 0.01 ? 5 : numeric >= 0.001 ? 6 : 8,
+  }).format(numeric);
+}
+
 function formatEstimatedDuration(milliseconds: number | undefined | null) {
   const numeric = milliseconds;
 
@@ -1317,7 +1336,7 @@ function formatQuoteRouteLabel(quote: BridgeQuote) {
 }
 
 function getQuoteFeeCopy(quote: BridgeQuote) {
-  const directFee = formatUsd(quote.feeUsd);
+  const directFee = formatFeeUsd(quote.feeUsd);
 
   if (directFee) {
     return directFee;
@@ -1333,7 +1352,7 @@ function getFeeTotalUsd(fees?: QuoteFee[]) {
 
   const total = fees.reduce((sum, fee) => sum + Number(fee.amountUsd ?? 0), 0);
 
-  return formatUsd(total);
+  return formatFeeUsd(total);
 }
 
 function isTransactionStep(step: QuoteUserStep): step is TransactionUserStep {
