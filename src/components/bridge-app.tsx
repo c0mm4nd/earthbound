@@ -172,6 +172,8 @@ type InlineOptionItem = {
   key: string;
   badgeText: string;
   iconUrl?: string;
+  iconBadgeLabel?: string;
+  iconBadgeUrl?: string;
   title: string;
   subtitle?: string;
   meta?: string;
@@ -318,6 +320,54 @@ function getBridgeTokenId(token?: Pick<BridgeToken, "address" | "chainKey"> | nu
   }
 
   return `${token.chainKey.toLowerCase()}:${token.address.toLowerCase()}`;
+}
+
+function compareBridgeTokens(left: BridgeToken, right: BridgeToken) {
+  const leftScore = Number(left.price?.usd ?? 0);
+  const rightScore = Number(right.price?.usd ?? 0);
+
+  if (leftScore !== rightScore) {
+    return rightScore - leftScore;
+  }
+
+  const symbolCompare = left.symbol.localeCompare(right.symbol);
+
+  if (symbolCompare !== 0) {
+    return symbolCompare;
+  }
+
+  return left.chainKey.localeCompare(right.chainKey);
+}
+
+function isMatchingSelectedToken(
+  token: Pick<BridgeToken, "address" | "chainKey">,
+  chainKey: string,
+  tokenAddress: string,
+) {
+  if (!chainKey || !tokenAddress) {
+    return false;
+  }
+
+  return (
+    token.chainKey === chainKey &&
+    token.address.toLowerCase() === tokenAddress.toLowerCase()
+  );
+}
+
+function buildTokenOptionSubtitle(name: string, chain?: Pick<BridgeChain, "shortName"> | null) {
+  return chain ? `${name} · ${chain.shortName}` : name;
+}
+
+function buildTokenOptionMeta(
+  chain: Pick<BridgeChain, "shortName"> | null | undefined,
+  priceUsd: number | undefined,
+) {
+  const parts = [
+    chain?.shortName,
+    priceUsd !== undefined ? (formatUsd(priceUsd) ?? undefined) : undefined,
+  ].filter(Boolean);
+
+  return parts.length ? parts.join(" · ") : undefined;
 }
 
 function getFallbackStargateTokenSymbol(
@@ -1694,13 +1744,62 @@ function SectionHeading({
   );
 }
 
+function AssetIconBadge({
+  label,
+  src,
+  size = "sm",
+}: {
+  label: string;
+  src?: string;
+  size?: "xs" | "sm" | "md";
+}) {
+  const [hasImageError, setHasImageError] = useState(false);
+  const content = label.replace(/[^a-z0-9]/gi, "").slice(0, 2) || "?";
+  const sizeClass =
+    size === "xs"
+      ? "h-3.5 w-3.5 text-[6px]"
+      : size === "sm"
+        ? "h-[1.125rem] w-[1.125rem] text-[7px]"
+        : "h-5 w-5 text-[8px]";
+
+  if (!src || hasImageError) {
+    return (
+      <span
+        className={`inline-flex ${sizeClass} items-center justify-center overflow-hidden rounded-full border border-[var(--panel)] bg-black font-semibold uppercase tracking-[0.12em] text-white`}
+        aria-hidden="true"
+      >
+        {content}
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className={`inline-flex ${sizeClass} items-center justify-center overflow-hidden rounded-full border border-[var(--panel)] bg-black`}
+      aria-hidden="true"
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt=""
+        className="h-full w-full object-cover"
+        onError={() => setHasImageError(true)}
+      />
+    </span>
+  );
+}
+
 function AssetIcon({
   label,
   src,
+  badgeLabel,
+  badgeSrc,
   size = "md",
 }: {
   label: string;
   src?: string;
+  badgeLabel?: string;
+  badgeSrc?: string;
   size?: "xs" | "sm" | "md";
 }) {
   const [hasImageError, setHasImageError] = useState(false);
@@ -1715,17 +1814,22 @@ function AssetIcon({
   if (!src || hasImageError) {
     return (
       <span
-        className={`inline-flex ${sizeClass} shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.06] font-semibold uppercase tracking-[0.18em] text-white`}
+        className={`relative inline-flex ${sizeClass} shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.06] font-semibold uppercase tracking-[0.18em] text-white`}
         aria-hidden="true"
       >
         {content}
+        {badgeLabel ? (
+          <span className="pointer-events-none absolute -right-0.5 -bottom-0.5">
+            <AssetIconBadge label={badgeLabel} src={badgeSrc} size={size} />
+          </span>
+        ) : null}
       </span>
     );
   }
 
   return (
     <span
-      className={`inline-flex ${sizeClass} shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/12 bg-white/[0.06]`}
+      className={`relative inline-flex ${sizeClass} shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/12 bg-white/[0.06]`}
       aria-hidden="true"
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1735,6 +1839,11 @@ function AssetIcon({
         className="h-full w-full object-cover"
         onError={() => setHasImageError(true)}
       />
+      {badgeLabel ? (
+        <span className="pointer-events-none absolute -right-0.5 -bottom-0.5">
+          <AssetIconBadge label={badgeLabel} src={badgeSrc} size={size} />
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -1793,6 +1902,8 @@ function InlineOptionList({
       return haystack.includes(normalizedQuery);
     });
   }, [items, normalizedQuery]);
+  const hasVisibleItems = filteredItems.length > 0;
+  const showBlockingLoader = Boolean(loadingLabel && !items.length && !normalizedQuery);
 
   return (
     <div className="flex min-h-0 flex-col gap-2">
@@ -1814,11 +1925,17 @@ function InlineOptionList({
         className={`${FIELD_CLASS} h-10 px-3 py-2 text-xs`}
       />
 
-      {loadingLabel ? (
+      {loadingLabel && hasVisibleItems ? (
+        <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--muted)]">
+          {loadingLabel}
+        </p>
+      ) : null}
+
+      {showBlockingLoader ? (
         <div className="flex min-h-0 flex-1 items-center rounded-[1.25rem] border border-white/10 bg-black px-4 py-3 text-sm text-[var(--muted)]">
           {loadingLabel}
         </div>
-      ) : filteredItems.length ? (
+      ) : hasVisibleItems ? (
         <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
           {filteredItems.map((item) => (
             <button
@@ -1831,7 +1948,13 @@ function InlineOptionList({
                   : "border-white/10 bg-black text-white hover:border-white/24 hover:bg-white/[0.04]"
               }`}
             >
-              <AssetIcon label={item.badgeText} src={item.iconUrl} size="sm" />
+              <AssetIcon
+                label={item.badgeText}
+                src={item.iconUrl}
+                badgeLabel={item.iconBadgeLabel}
+                badgeSrc={item.iconBadgeUrl}
+                size="sm"
+              />
               <span className="min-w-0">
                 <span className="block truncate text-sm font-medium">{item.title}</span>
                 {item.subtitle ? (
@@ -2641,20 +2764,19 @@ export function BridgeApp() {
   const activeSrcChain = isCustomOftSource ? customOftSrcChain : srcChain;
   const activeDstChain = isCustomOftSource ? customOftDstChain : dstChain;
 
-  const srcTokens = useMemo(() => {
+  const allSupportedTokens = useMemo(() => {
     return (tokensQuery.data?.tokens ?? [])
-      .filter((token) => token.chainKey === srcChainKey)
-      .sort((left, right) => {
-        const leftScore = Number(left.price?.usd ?? 0);
-        const rightScore = Number(right.price?.usd ?? 0);
+      .filter((token) => chainByKey.has(token.chainKey))
+      .toSorted(compareBridgeTokens);
+  }, [chainByKey, tokensQuery.data]);
 
-        if (leftScore === rightScore) {
-          return left.symbol.localeCompare(right.symbol);
-        }
+  const srcTokens = useMemo(() => {
+    if (!srcChainKey) {
+      return allSupportedTokens;
+    }
 
-        return rightScore - leftScore;
-      });
-  }, [srcChainKey, tokensQuery.data]);
+    return allSupportedTokens.filter((token) => token.chainKey === srcChainKey);
+  }, [allSupportedTokens, srcChainKey]);
 
   const routeTokensQuery = useQuery({
     queryKey: ["bridge", "tokens", "routes", srcChainKey, srcTokenAddress],
@@ -2667,8 +2789,8 @@ export function BridgeApp() {
   });
 
   const selectableDestinationChains = useMemo(() => {
-    if (!routeTokensQuery.data?.tokens?.length) {
-      return supportedChains.filter((chain) => chain.chainKey !== srcChainKey);
+    if (!routeTokensQuery.data) {
+      return supportedChains.filter((chain) => !srcChainKey || chain.chainKey !== srcChainKey);
     }
 
     const availableKeys = new Set(
@@ -2676,39 +2798,46 @@ export function BridgeApp() {
     );
 
     return supportedChains.filter(
-      (chain) => chain.chainKey !== srcChainKey && availableKeys.has(chain.chainKey),
+      (chain) =>
+        availableKeys.has(chain.chainKey) &&
+        (!srcChainKey || chain.chainKey !== srcChainKey),
     );
   }, [routeTokensQuery.data, srcChainKey, supportedChains]);
 
+  const destinationTokenCatalog = useMemo(() => {
+    const tokens = routeTokensQuery.data ? routeTokensQuery.data.tokens : allSupportedTokens;
+
+    return tokens
+      .filter(
+        (token) =>
+          chainByKey.has(token.chainKey) &&
+          (!srcChainKey || token.chainKey !== srcChainKey),
+      )
+      .toSorted(compareBridgeTokens);
+  }, [allSupportedTokens, chainByKey, routeTokensQuery.data, srcChainKey]);
+
   const destinationTokens = useMemo(() => {
-    return (routeTokensQuery.data?.tokens ?? [])
-      .filter((token) => token.chainKey === dstChainKey)
-      .sort((left, right) => {
-        const leftScore = Number(left.price?.usd ?? 0);
-        const rightScore = Number(right.price?.usd ?? 0);
+    if (!dstChainKey) {
+      return destinationTokenCatalog;
+    }
 
-        if (leftScore === rightScore) {
-          return left.symbol.localeCompare(right.symbol);
-        }
-
-        return rightScore - leftScore;
-      });
-  }, [dstChainKey, routeTokensQuery.data]);
+    return destinationTokenCatalog.filter((token) => token.chainKey === dstChainKey);
+  }, [destinationTokenCatalog, dstChainKey]);
 
   const selectedSrcToken = useMemo(
     () =>
       srcTokens.find(
-        (token) => token.address.toLowerCase() === srcTokenAddress.toLowerCase(),
+        (token) => isMatchingSelectedToken(token, srcChainKey, srcTokenAddress),
       ) ?? null,
-    [srcTokenAddress, srcTokens],
+    [srcChainKey, srcTokenAddress, srcTokens],
   );
 
   const selectedDstToken = useMemo(
     () =>
       destinationTokens.find(
-        (token) => token.address.toLowerCase() === dstTokenAddress.toLowerCase(),
+        (token) => isMatchingSelectedToken(token, dstChainKey, dstTokenAddress),
       ) ?? null,
-    [destinationTokens, dstTokenAddress],
+    [destinationTokens, dstChainKey, dstTokenAddress],
   );
   const selectedSrcTokenPresentation = useMemo(
     () => getTokenPresentation(selectedSrcToken, tokenDisplaySource, stargateTokenDetailsById),
@@ -2804,7 +2933,7 @@ export function BridgeApp() {
           chain.chainType,
         ],
         selected: chain.chainKey === srcChainKey,
-        onSelect: () => setSrcChainKey(chain.chainKey),
+        onSelect: () => setSrcChainKey((current) => (current === chain.chainKey ? "" : chain.chainKey)),
       })),
     [srcChainKey, supportedChains],
   );
@@ -2818,23 +2947,41 @@ export function BridgeApp() {
           stargateTokenDetailsById,
         );
         const displaySymbol = presentation?.symbol ?? token.symbol;
+        const chain = chainByKey.get(token.chainKey);
 
         return {
           key: `${token.chainKey}:${token.address}`,
           badgeText: displaySymbol,
           iconUrl: presentation?.iconUrl,
+          iconBadgeLabel: chain?.shortName ?? token.chainKey,
+          iconBadgeUrl: getStargateChainIconUrl(token.chainKey),
           title: displaySymbol,
-          subtitle: presentation?.name ?? token.name,
-          meta:
-            presentation?.priceUsd !== undefined
-              ? formatUsd(presentation.priceUsd) ?? undefined
-              : undefined,
-          searchTerms: [displaySymbol, token.symbol, token.name, token.address, token.chainKey],
-          selected: token.address.toLowerCase() === srcTokenAddress.toLowerCase(),
-          onSelect: () => setSrcTokenAddress(token.address),
+          subtitle: buildTokenOptionSubtitle(presentation?.name ?? token.name, chain),
+          meta: buildTokenOptionMeta(chain, presentation?.priceUsd),
+          searchTerms: [
+            displaySymbol,
+            token.symbol,
+            token.name,
+            token.address,
+            token.chainKey,
+            chain?.name,
+            chain?.shortName,
+          ].filter(Boolean) as string[],
+          selected: isMatchingSelectedToken(token, srcChainKey, srcTokenAddress),
+          onSelect: () => {
+            setSrcChainKey(token.chainKey);
+            setSrcTokenAddress(token.address);
+          },
         };
       }),
-    [srcTokenAddress, srcTokens, stargateTokenDetailsById, tokenDisplaySource],
+    [
+      chainByKey,
+      srcChainKey,
+      srcTokenAddress,
+      srcTokens,
+      stargateTokenDetailsById,
+      tokenDisplaySource,
+    ],
   );
 
   const dstChainItems = useMemo<InlineOptionItem[]>(
@@ -2854,7 +3001,7 @@ export function BridgeApp() {
           chain.chainType,
         ],
         selected: chain.chainKey === dstChainKey,
-        onSelect: () => setDstChainKey(chain.chainKey),
+        onSelect: () => setDstChainKey((current) => (current === chain.chainKey ? "" : chain.chainKey)),
       })),
     [dstChainKey, selectableDestinationChains],
   );
@@ -2868,57 +3015,104 @@ export function BridgeApp() {
           stargateTokenDetailsById,
         );
         const displaySymbol = presentation?.symbol ?? token.symbol;
+        const chain = chainByKey.get(token.chainKey);
 
         return {
           key: `${token.chainKey}:${token.address}`,
           badgeText: displaySymbol,
           iconUrl: presentation?.iconUrl,
+          iconBadgeLabel: chain?.shortName ?? token.chainKey,
+          iconBadgeUrl: getStargateChainIconUrl(token.chainKey),
           title: displaySymbol,
-          subtitle: presentation?.name ?? token.name,
-          meta:
-            presentation?.priceUsd !== undefined
-              ? formatUsd(presentation.priceUsd) ?? undefined
-              : undefined,
-          searchTerms: [displaySymbol, token.symbol, token.name, token.address, token.chainKey],
-          selected: token.address.toLowerCase() === dstTokenAddress.toLowerCase(),
-          onSelect: () => setDstTokenAddress(token.address),
+          subtitle: buildTokenOptionSubtitle(presentation?.name ?? token.name, chain),
+          meta: buildTokenOptionMeta(chain, presentation?.priceUsd),
+          searchTerms: [
+            displaySymbol,
+            token.symbol,
+            token.name,
+            token.address,
+            token.chainKey,
+            chain?.name,
+            chain?.shortName,
+          ].filter(Boolean) as string[],
+          selected: isMatchingSelectedToken(token, dstChainKey, dstTokenAddress),
+          onSelect: () => {
+            setDstChainKey(token.chainKey);
+            setDstTokenAddress(token.address);
+          },
         };
       }),
-    [destinationTokens, dstTokenAddress, stargateTokenDetailsById, tokenDisplaySource],
+    [
+      chainByKey,
+      destinationTokens,
+      dstChainKey,
+      dstTokenAddress,
+      stargateTokenDetailsById,
+      tokenDisplaySource,
+    ],
   );
 
   const customOftSrcTokenItems = useMemo<InlineOptionItem[]>(
     () =>
       customOftConfigs.flatMap((config) => {
-        const deployment = config.deployments[srcChainKey];
-        if (!deployment) return [];
-        const address = deployment.tokenAddress ?? deployment.oftAddress;
-        const symbol = config.symbol;
-        const isSelected =
-          selectedCustomOftConfigId === config.id &&
-          selectedCustomOftSrcChainKey === srcChainKey &&
-          srcTokenAddress.toLowerCase() === address.toLowerCase();
-        return [
-          {
-            key: `custom-oft:${config.id}`,
-            badgeText: symbol,
-            iconUrl: getStargateTokenIconUrl(symbol),
-            title: symbol,
-            subtitle: config.name,
-            meta: "OFT",
-            searchTerms: [symbol, config.name, address, srcChainKey],
-            selected: isSelected,
-            onSelect: () => {
-              setSrcTokenAddress(address);
-              setSelectedCustomOftConfigId(config.id);
-              setSelectedCustomOftSrcChainKey(srcChainKey);
-              setSelectedCustomOftDstChainKey("");
-              setDstChainKey("");
+        const candidateDeployments = srcChainKey
+          ? (() => {
+              const deployment = config.deployments[srcChainKey];
+              return deployment ? [{ ...deployment, chainKey: srcChainKey }] : [];
+            })()
+          : getSortedCustomOftDeployments(config);
+
+        return candidateDeployments.flatMap((deployment) => {
+          const chain = chainByKey.get(deployment.chainKey);
+
+          if (!chain || !isLocalCustomOftSourceChainSupported(chain.chainType)) {
+            return [];
+          }
+
+          const address = deployment.tokenAddress ?? deployment.oftAddress;
+          const symbol = config.symbol;
+          const isSelected =
+            selectedCustomOftConfigId === config.id &&
+            selectedCustomOftSrcChainKey === deployment.chainKey &&
+            isMatchingSelectedToken(
+              { chainKey: deployment.chainKey, address },
+              srcChainKey,
+              srcTokenAddress,
+            );
+
+          return [
+            {
+              key: `custom-oft:${config.id}:${deployment.chainKey}`,
+              badgeText: symbol,
+              iconUrl: getStargateTokenIconUrl(symbol),
+              iconBadgeLabel: chain.shortName,
+              iconBadgeUrl: getStargateChainIconUrl(deployment.chainKey),
+              title: symbol,
+              subtitle: buildTokenOptionSubtitle(config.name, chain),
+              meta: "OFT",
+              searchTerms: [
+                symbol,
+                config.name,
+                address,
+                deployment.chainKey,
+                chain.name,
+                chain.shortName,
+              ],
+              selected: isSelected,
+              onSelect: () => {
+                setSrcChainKey(deployment.chainKey);
+                setSrcTokenAddress(address);
+                setSelectedCustomOftConfigId(config.id);
+                setSelectedCustomOftSrcChainKey(deployment.chainKey);
+                setSelectedCustomOftDstChainKey("");
+                setDstChainKey("");
+              },
             },
-          },
-        ];
+          ];
+        });
       }),
     [
+      chainByKey,
       customOftConfigs,
       srcChainKey,
       selectedCustomOftConfigId,
@@ -2945,8 +3139,9 @@ export function BridgeApp() {
         ],
         selected: chain.chainKey === dstChainKey,
         onSelect: () => {
-          setDstChainKey(chain.chainKey);
-          setSelectedCustomOftDstChainKey(chain.chainKey);
+          const nextChainKey = dstChainKey === chain.chainKey ? "" : chain.chainKey;
+          setDstChainKey(nextChainKey);
+          setSelectedCustomOftDstChainKey(nextChainKey);
         },
       })),
     [customOftRuntimeDestinationChains, dstChainKey],
@@ -2961,8 +3156,10 @@ export function BridgeApp() {
           key: `custom-oft-dst:${selectedCustomOftConfigId}:${dstChainKey}`,
           badgeText: symbol,
           iconUrl: customOftDestinationTokenIconUrl,
+          iconBadgeLabel: customOftDstChain?.shortName ?? dstChainKey,
+          iconBadgeUrl: customOftDstChain ? getStargateChainIconUrl(customOftDstChain.chainKey) : undefined,
           title: symbol,
-          subtitle: selectedCustomOftConfig?.name,
+          subtitle: buildTokenOptionSubtitle(selectedCustomOftConfig?.name ?? symbol, customOftDstChain),
           selected: true,
           onSelect: () => {},
         },
@@ -2972,6 +3169,7 @@ export function BridgeApp() {
       customOftDestinationToken,
       customOftDestinationTokenSymbol,
       customOftDestinationTokenIconUrl,
+      customOftDstChain,
       selectedCustomOftConfigId,
       dstChainKey,
       selectedCustomOftConfig,
@@ -3771,7 +3969,7 @@ export function BridgeApp() {
         return current;
       }
 
-      return customOftRuntimeSourceChains[0]?.chainKey ?? "";
+      return "";
     });
   }, [customOftRuntimeSourceChains, selectedCustomOftConfig]);
 
@@ -3789,32 +3987,21 @@ export function BridgeApp() {
         return current;
       }
 
-      return customOftRuntimeDestinationChains[0]?.chainKey ?? "";
+      return "";
     });
   }, [customOftRuntimeDestinationChains, selectedCustomOftConfig]);
 
   useEffect(() => {
-    if (!supportedChains.length) {
-      return;
-    }
-
     setSrcChainKey((current) => {
       if (current && supportedChains.some((chain) => chain.chainKey === current)) {
         return current;
       }
 
-      return (
-        supportedChains.find((chain) => chain.chainKey === "ethereum")?.chainKey ??
-        supportedChains[0].chainKey
-      );
+      return "";
     });
   }, [supportedChains]);
 
   useEffect(() => {
-    if (!supportedChains.length) {
-      return;
-    }
-
     setDstChainKey((current) => {
       if (
         current &&
@@ -3824,13 +4011,7 @@ export function BridgeApp() {
         return current;
       }
 
-      return (
-        supportedChains.find(
-          (chain) => chain.chainKey === "arbitrum" && chain.chainKey !== srcChainKey,
-        )?.chainKey ??
-        supportedChains.find((chain) => chain.chainKey !== srcChainKey)?.chainKey ??
-        ""
-      );
+      return "";
     });
   }, [srcChainKey, supportedChains]);
 
@@ -3918,28 +4099,52 @@ export function BridgeApp() {
   ]);
 
   useEffect(() => {
-    if (!selectableDestinationChains.length) {
-      return;
-    }
-
     setDstChainKey((current) => {
       if (current && selectableDestinationChains.some((chain) => chain.chainKey === current)) {
         return current;
       }
 
-      return selectableDestinationChains[0].chainKey;
+      return "";
     });
   }, [selectableDestinationChains]);
 
   useEffect(() => {
-    setSrcTokenAddress("");
-    setDstTokenAddress("");
     setQuotes([]);
     setSelectedQuoteRouteKey(null);
     setQuoteError(null);
     setLastQuoteUpdatedAt(null);
     setExecutionState({ phase: "idle" });
   }, [srcChainKey]);
+
+  useEffect(() => {
+    if (!srcTokenAddress) {
+      return;
+    }
+
+    if (!srcChainKey) {
+      setSrcTokenAddress("");
+      return;
+    }
+
+    const hasMatchingCatalogToken = srcTokens.some((token) =>
+      isMatchingSelectedToken(token, srcChainKey, srcTokenAddress),
+    );
+    const hasMatchingCustomOftToken = customOftConfigs.some((config) => {
+      const deployment = config.deployments[srcChainKey];
+
+      if (!deployment) {
+        return false;
+      }
+
+      const address = deployment.tokenAddress ?? deployment.oftAddress;
+
+      return address.toLowerCase() === srcTokenAddress.toLowerCase();
+    });
+
+    if (!hasMatchingCatalogToken && !hasMatchingCustomOftToken) {
+      setSrcTokenAddress("");
+    }
+  }, [customOftConfigs, srcChainKey, srcTokenAddress, srcTokens]);
 
   useEffect(() => {
     setDstTokenAddress("");
@@ -3951,15 +4156,19 @@ export function BridgeApp() {
   }, [srcTokenAddress]);
 
   useEffect(() => {
-    if (
-      dstTokenAddress &&
-      !destinationTokens.some(
-        (token) => token.address.toLowerCase() === dstTokenAddress.toLowerCase(),
-      )
-    ) {
+    if (!dstTokenAddress) {
+      return;
+    }
+
+    if (!dstChainKey) {
+      setDstTokenAddress("");
+      return;
+    }
+
+    if (!destinationTokens.some((token) => isMatchingSelectedToken(token, dstChainKey, dstTokenAddress))) {
       setDstTokenAddress("");
     }
-  }, [destinationTokens, dstTokenAddress]);
+  }, [destinationTokens, dstChainKey, dstTokenAddress]);
 
   useEffect(() => {
     setQuotes([]);
@@ -5030,7 +5239,6 @@ export function BridgeApp() {
 
                     <div className="mt-3 grid min-h-0 flex-1 gap-3 sm:grid-cols-2">
                       <InlineOptionList
-                        key={`src-chain-${srcChainKey}`}
                         title="Chain"
                         items={srcChainItems}
                         emptyState="No source chains."
@@ -5038,10 +5246,9 @@ export function BridgeApp() {
                       />
 
                       <InlineOptionList
-                        key={`src-token-${srcChainKey}`}
                         title="Token"
                         items={[...srcTokenItems, ...customOftSrcTokenItems]}
-                        emptyState={srcChainKey ? "No source tokens." : "Select a source chain."}
+                        emptyState="No source tokens."
                         loadingLabel={tokensQuery.isPending ? "Loading tokens..." : null}
                       />
                     </div>
@@ -5078,7 +5285,6 @@ export function BridgeApp() {
 
                     <div className="mt-3 grid min-h-0 flex-1 gap-3 sm:grid-cols-2">
                       <InlineOptionList
-                        key={`dst-chain-${srcChainKey}-${dstChainKey}`}
                         title="Chain"
                         items={isCustomOftSource ? customOftDstChainItems : dstChainItems}
                         emptyState={isCustomOftSource ? "No OFT destination chains." : "No destination chains."}
@@ -5086,11 +5292,10 @@ export function BridgeApp() {
                       />
 
                       <InlineOptionList
-                        key={`dst-token-${srcChainKey}-${srcTokenAddress}-${dstChainKey}`}
                         title="Token"
                         items={isCustomOftSource ? customOftDstTokenItems : dstTokenItems}
-                        emptyState={isCustomOftSource ? (dstChainKey ? "No OFT destination token." : "Select a destination chain.") : (dstChainKey ? "No destination tokens." : "Select a destination chain.")}
-                        loadingLabel={(!isCustomOftSource && routeTokensQuery.isPending) ? "Loading tokens..." : null}
+                        emptyState={isCustomOftSource ? "No OFT destination token." : "No destination tokens."}
+                        loadingLabel={(!isCustomOftSource && routeTokensQuery.isPending) ? "Loading routes..." : null}
                       />
                     </div>
                   </div>
