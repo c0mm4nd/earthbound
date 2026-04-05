@@ -47,7 +47,12 @@ export interface QuoteFee {
   amount?: string;
   amountUsd?: string;
   chainKey?: string;
+  address?: string;
   tokenAddress?: string;
+  decimals?: number;
+  symbol?: string;
+  name?: string;
+  description?: string;
 }
 
 export interface QuoteDuration {

@@ -1,10 +1,152 @@
 import { NextRequest, NextResponse } from "next/server";
+import { formatUnits } from "viem";
 import {
   fetchLayerZeroJson,
   fetchStargateApiJson,
   fetchStargateV2ApiJson,
 } from "@/lib/layerzero";
-import type { BridgeApiProvider } from "@/lib/bridge-types";
+import type {
+  BridgeApiProvider,
+  BridgeQuote,
+  BridgeQuoteResponse,
+  BridgeToken,
+  QuoteFee,
+} from "@/lib/bridge-types";
+
+function getTokenId(
+  chainKey?: string | null,
+  address?: string | null,
+) {
+  if (!chainKey || !address) {
+    return null;
+  }
+
+  return `${chainKey.trim().toLowerCase()}:${address.trim().toLowerCase()}`;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseFiniteNumber(value: unknown) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  return null;
+}
+
+function formatUsdAmount(value: number) {
+  return value.toFixed(8);
+}
+
+function buildQuoteTokenById(tokens?: BridgeToken[]) {
+  const tokenById = new Map<string, BridgeToken>();
+
+  for (const token of tokens ?? []) {
+    const tokenId = getTokenId(token.chainKey, token.address);
+
+    if (tokenId) {
+      tokenById.set(tokenId, token);
+    }
+  }
+
+  return tokenById;
+}
+
+function deriveFeeAmountUsd(
+  fee: QuoteFee,
+  tokenById: ReadonlyMap<string, BridgeToken>,
+) {
+  const address = fee.tokenAddress ?? fee.address;
+  const token = tokenById.get(getTokenId(fee.chainKey, address) ?? "");
+  const existingAmountUsd = parseFiniteNumber(fee.amountUsd);
+
+  if (!fee.amount || !token || !isFiniteNumber(token.price?.usd)) {
+    return existingAmountUsd !== null ? fee.amountUsd : undefined;
+  }
+
+  try {
+    const amount = Number(formatUnits(BigInt(fee.amount), token.decimals));
+
+    if (!Number.isFinite(amount)) {
+      return existingAmountUsd !== null ? fee.amountUsd : undefined;
+    }
+
+    const computedAmountUsd = amount * token.price.usd;
+
+    if (
+      existingAmountUsd !== null &&
+      (existingAmountUsd > 0 || !Number.isFinite(computedAmountUsd) || computedAmountUsd <= 0)
+    ) {
+      return fee.amountUsd;
+    }
+
+    return Number.isFinite(computedAmountUsd) && computedAmountUsd > 0
+      ? formatUsdAmount(computedAmountUsd)
+      : undefined;
+  } catch {
+    return existingAmountUsd !== null ? fee.amountUsd : undefined;
+  }
+}
+
+function normalizeQuoteFees(
+  quote: BridgeQuote,
+  tokenById: ReadonlyMap<string, BridgeToken>,
+) {
+  const fees = quote.fees?.map((fee) => {
+    const tokenAddress = fee.tokenAddress ?? fee.address;
+    const token = tokenById.get(getTokenId(fee.chainKey, tokenAddress) ?? "");
+
+    return {
+      ...fee,
+      address: tokenAddress,
+      tokenAddress,
+      amountUsd: deriveFeeAmountUsd(fee, tokenById),
+      decimals: fee.decimals ?? token?.decimals,
+      symbol: fee.symbol ?? token?.symbol,
+      name: fee.name ?? token?.name,
+    } satisfies QuoteFee;
+  });
+
+  const computedFeeUsd = fees?.reduce((sum, fee) => {
+    const amountUsd = parseFiniteNumber(fee.amountUsd);
+    return amountUsd !== null ? sum + amountUsd : sum;
+  }, 0);
+  const existingFeeUsd = parseFiniteNumber(quote.feeUsd);
+  const feeUsd =
+    existingFeeUsd !== null &&
+    (existingFeeUsd > 0 || computedFeeUsd === undefined || computedFeeUsd <= 0)
+      ? quote.feeUsd
+      : computedFeeUsd !== undefined && computedFeeUsd > 0
+        ? formatUsdAmount(computedFeeUsd)
+        : quote.feeUsd;
+
+  return {
+    ...quote,
+    fees,
+    feeUsd,
+  } satisfies BridgeQuote;
+}
+
+function normalizeQuoteResponse(data: unknown) {
+  if (!data || typeof data !== "object" || !Array.isArray((data as BridgeQuoteResponse).quotes)) {
+    return data;
+  }
+
+  const response = data as BridgeQuoteResponse;
+  const tokenById = buildQuoteTokenById(response.tokens);
+
+  return {
+    ...response,
+    quotes: response.quotes.map((quote) => normalizeQuoteFees(quote, tokenById)),
+  } satisfies BridgeQuoteResponse;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -45,7 +187,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: message }, { status: response.status });
     }
 
-    return NextResponse.json(data, { status: response.status });
+    return NextResponse.json(normalizeQuoteResponse(data), { status: response.status });
   } catch (error) {
     return NextResponse.json(
       {

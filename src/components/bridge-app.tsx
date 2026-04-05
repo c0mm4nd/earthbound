@@ -1288,7 +1288,7 @@ function compareQuotes(left: BridgeQuote, right: BridgeQuote) {
   const rightAmount = BigInt(right.dstAmount);
 
   if (leftAmount === rightAmount) {
-    return Number(left.feeUsd ?? "0") - Number(right.feeUsd ?? "0");
+    return getQuoteFeeUsdValue(left) - getQuoteFeeUsdValue(right);
   }
 
   return rightAmount > leftAmount ? 1 : -1;
@@ -1337,6 +1337,12 @@ function formatQuoteRouteLabel(quote: BridgeQuote) {
 }
 
 function getQuoteFeeCopy(quote: BridgeQuote) {
+  const singleFeeCopy = getSingleQuoteFeeCopy(quote.fees);
+
+  if (singleFeeCopy) {
+    return singleFeeCopy;
+  }
+
   const directFee = formatFeeUsd(quote.feeUsd);
 
   if (directFee) {
@@ -1354,6 +1360,43 @@ function getFeeTotalUsd(fees?: QuoteFee[]) {
   const total = fees.reduce((sum, fee) => sum + Number(fee.amountUsd ?? 0), 0);
 
   return formatFeeUsd(total);
+}
+
+function getQuoteFeeUsdValue(quote: BridgeQuote) {
+  const directFee = Number(quote.feeUsd ?? "");
+
+  if (Number.isFinite(directFee) && directFee > 0) {
+    return directFee;
+  }
+
+  if (!quote.fees?.length) {
+    return Number.isFinite(directFee) ? directFee : 0;
+  }
+
+  const total = quote.fees.reduce((sum, fee) => sum + Number(fee.amountUsd ?? 0), 0);
+
+  if (Number.isFinite(total) && total > 0) {
+    return total;
+  }
+
+  return Number.isFinite(directFee) ? directFee : 0;
+}
+
+function getSingleQuoteFeeCopy(fees?: QuoteFee[]) {
+  if (!fees || fees.length !== 1) {
+    return null;
+  }
+
+  const [fee] = fees;
+
+  if (!fee?.amount || fee.decimals === undefined || !fee.symbol) {
+    return null;
+  }
+
+  const amountCopy = formatTokenAmount(fee.amount, fee.decimals, 4);
+  const usdCopy = formatFeeUsd(fee.amountUsd);
+
+  return usdCopy ? `${amountCopy} ${fee.symbol} (${usdCopy})` : `${amountCopy} ${fee.symbol}`;
 }
 
 function isTransactionStep(step: QuoteUserStep): step is TransactionUserStep {
