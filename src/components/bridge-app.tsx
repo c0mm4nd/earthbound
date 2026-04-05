@@ -2607,6 +2607,7 @@ export function BridgeApp() {
   const [fallbackEvmBalanceValue, setFallbackEvmBalanceValue] = useState<bigint | undefined>();
   const [isFallbackEvmBalanceLoading, setIsFallbackEvmBalanceLoading] = useState(false);
   const customOftImportInputRef = useRef<HTMLInputElement | null>(null);
+  const prevPreferredDestinationAddressRef = useRef<string>("");
   const balanceSwitchAttemptRef = useRef<string | null>(null);
   const notificationTimeoutsRef = useRef(new Map<string, number>());
   const quoteRequestIdRef = useRef(0);
@@ -4057,11 +4058,39 @@ export function BridgeApp() {
   }, [srcChainKey, dstChainKey, srcTokenAddress, dstTokenAddress, router, pathname]);
 
   useEffect(() => {
+    // Track previous preferred address to detect wallet switches vs manual edits
+    const prevPreferred = prevPreferredDestinationAddressRef.current;
+    prevPreferredDestinationAddressRef.current = preferredDestinationWalletAddress;
+
     setDestinationAddress((current) => {
+      // "Auto-filled" means it was empty or matches the previous preferred wallet address
+      const wasAutoFilled = !current || current === prevPreferred;
+
+      if (wasAutoFilled) {
+        // Follow the new preferred wallet address
+        if (
+          preferredDestinationWalletAddress &&
+          validateAddressForChainType(destinationChainType, preferredDestinationWalletAddress)
+        ) {
+          return preferredDestinationWalletAddress;
+        }
+
+        if (
+          sourceWalletAddress &&
+          validateAddressForChainType(destinationChainType, sourceWalletAddress)
+        ) {
+          return sourceWalletAddress;
+        }
+
+        return current;
+      }
+
+      // User manually entered a different address — keep it if still valid for this chain type
       if (current && validateAddressForChainType(destinationChainType, current)) {
         return current;
       }
 
+      // Current address is invalid for the new chain type (e.g. chain switched) — auto-fill
       if (
         preferredDestinationWalletAddress &&
         validateAddressForChainType(destinationChainType, preferredDestinationWalletAddress)
@@ -4217,7 +4246,7 @@ export function BridgeApp() {
     setQuoteError(null);
     setLastQuoteUpdatedAt(null);
     setExecutionState({ phase: "idle" });
-  }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, bridgeApiProvider]);
+  }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, bridgeApiProvider, sourceWalletAddress]);
 
   async function handleRequestQuote(mode: "auto" | "manual" | "refresh" = "manual") {
     if (isCustomOftSource) {
