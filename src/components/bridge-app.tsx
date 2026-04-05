@@ -34,6 +34,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import type {
   BridgeApiProvider,
   BridgeChain,
@@ -2560,6 +2561,16 @@ export function BridgeApp() {
   const { disconnect } = useDisconnect();
   const { switchChainAsync, isPending: isSwitchPending } = useSwitchChain();
   const bridgeWallets = useBridgeWallets();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const initialUrlParamsRef = useRef({
+    srcChain: searchParams.get("srcChain") ?? "",
+    dstChain: searchParams.get("dstChain") ?? "",
+    srcToken: searchParams.get("srcToken") ?? "",
+    dstToken: searchParams.get("dstToken") ?? "",
+    applied: false,
+  });
   const [srcChainKey, setSrcChainKey] = useState("");
   const [dstChainKey, setDstChainKey] = useState("");
   const [srcTokenAddress, setSrcTokenAddress] = useState("");
@@ -4014,6 +4025,36 @@ export function BridgeApp() {
       return "";
     });
   }, [srcChainKey, supportedChains]);
+
+  // Apply initial URL params once supportedChains are loaded
+  useEffect(() => {
+    if (initialUrlParamsRef.current.applied) return;
+    if (supportedChains.length === 0) return;
+
+    initialUrlParamsRef.current.applied = true;
+    const { srcChain, dstChain, srcToken, dstToken } = initialUrlParamsRef.current;
+
+    if (srcChain && supportedChains.some((c) => c.chainKey === srcChain)) {
+      setSrcChainKey(srcChain);
+    }
+    if (dstChain && dstChain !== srcChain && supportedChains.some((c) => c.chainKey === dstChain)) {
+      setDstChainKey(dstChain);
+    }
+    if (srcToken) setSrcTokenAddress(srcToken);
+    if (dstToken) setDstTokenAddress(dstToken);
+  }, [supportedChains]);
+
+  // Sync selected chain/token state to URL
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (srcChainKey) params.set("srcChain", srcChainKey);
+    if (dstChainKey) params.set("dstChain", dstChainKey);
+    if (srcTokenAddress) params.set("srcToken", srcTokenAddress);
+    if (dstTokenAddress) params.set("dstToken", dstTokenAddress);
+
+    const search = params.toString();
+    router.replace(`${pathname}${search ? `?${search}` : ""}`, { scroll: false });
+  }, [srcChainKey, dstChainKey, srcTokenAddress, dstTokenAddress, router, pathname]);
 
   useEffect(() => {
     setDestinationAddress((current) => {
