@@ -86,9 +86,10 @@ import {
 } from "@/lib/injected-evm";
 import {
   walletChainByKey,
-  wagmiConfig,
   type SupportedChainId,
 } from "@/lib/wagmi";
+import { useRpcConfig } from "@/components/providers";
+import { RpcSettingsModal } from "@/components/rpc-settings-modal";
 
 const NATIVE_TOKEN_ADDRESS = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const TRANSFER_TERMINAL_STATUSES = new Set([
@@ -2556,6 +2557,8 @@ function CustomOftSetupModal({
 }
 
 export function BridgeApp() {
+  const { wagmiConfig } = useRpcConfig();
+  const [isRpcSettingsOpen, setIsRpcSettingsOpen] = useState(false);
   const { address, chainId, isConnected } = useAccount();
   const { connect, connectors, isPending: isConnectPending } = useConnect();
   const { disconnect } = useDisconnect();
@@ -5122,6 +5125,15 @@ export function BridgeApp() {
                 <GitHubIcon className="h-3.5 w-3.5" />
                 <span>GitHub</span>
               </a>
+              <button
+                type="button"
+                onClick={() => setIsRpcSettingsOpen(true)}
+                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black px-2.5 py-1 font-medium text-white/84 transition hover:border-white/24 hover:bg-white/[0.04] hover:text-white"
+                title="Configure RPC endpoints"
+              >
+                <SettingsIcon className="h-3.5 w-3.5" />
+                <span>RPC</span>
+              </button>
             </div>
           </div>
 
@@ -5844,6 +5856,9 @@ export function BridgeApp() {
           onDelete={handleDeleteCustomOftConfig}
           onClose={() => setIsCustomOftSetupModalOpen(false)}
         />
+      ) : null}
+      {isRpcSettingsOpen ? (
+        <RpcSettingsModal onClose={() => setIsRpcSettingsOpen(false)} />
       ) : null}
       {isLayerZeroApiKeyModalOpen ? (
         <LayerZeroApiKeyModal

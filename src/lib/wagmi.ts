@@ -22,8 +22,9 @@ import {
   worldchain,
   zircuit,
 } from "viem/chains";
-import { createConfig, http } from "wagmi";
+import { createConfig, fallback, http } from "wagmi";
 import { injected } from "wagmi/connectors";
+import { type RpcConfig, getEffectiveRpcUrls } from "./rpc-config";
 
 export const walletChainByKey = {
   abstract,
@@ -74,13 +75,30 @@ export const walletChains = [
 export type WalletChainKey = keyof typeof walletChainByKey;
 export type SupportedChainId = (typeof walletChains)[number]["id"];
 
-const transports = Object.fromEntries(
-  walletChains.map((chain) => [chain.id, http()]),
-) as Record<SupportedChainId, ReturnType<typeof http>>;
+export function createWagmiConfig(rpcConfig: RpcConfig = {}) {
+  const chainKeyById = Object.fromEntries(
+    Object.entries(walletChainByKey).map(([key, chain]) => [chain.id, key]),
+  );
 
-export const wagmiConfig = createConfig({
-  chains: walletChains,
-  connectors: [injected()],
-  ssr: false,
-  transports,
-});
+  const transports = Object.fromEntries(
+    walletChains.map((chain) => {
+      const chainKey = chainKeyById[chain.id];
+      const urls = chainKey ? getEffectiveRpcUrls(chainKey, rpcConfig) : [];
+      const httpTransports = urls.map((url) => http(url));
+      const transport =
+        httpTransports.length > 1
+          ? fallback(httpTransports)
+          : httpTransports[0] ?? http();
+      return [chain.id, transport];
+    }),
+  ) as Record<SupportedChainId, ReturnType<typeof http>>;
+
+  return createConfig({
+    chains: walletChains,
+    connectors: [injected()],
+    ssr: false,
+    transports,
+  });
+}
+
+export const wagmiConfig = createWagmiConfig();
