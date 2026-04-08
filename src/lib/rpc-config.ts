@@ -54,6 +54,47 @@ export const DEFAULT_RPC_URLS: Record<string, string[]> = {
   unichain: [
     "https://mainnet.unichain.org",
   ],
+  abstract: [
+    "https://api.mainnet.abs.xyz",
+  ],
+  hemi: [
+    "https://rpc.hemi.network/rpc",
+  ],
+  hyperliquid: [
+    "https://rpc.hyperliquid.xyz/evm",
+  ],
+  plasma: [
+    "https://rpc.plasma.to",
+  ],
+  somnia: [
+    "https://api.infra.mainnet.somnia.network",
+  ],
+  soneium: [
+    "https://rpc.soneium.org",
+    "https://rpc.ankr.com/soneium",
+  ],
+  worldchain: [
+    "https://worldchain-mainnet.g.alchemy.com/public",
+    "https://rpc.ankr.com/worldchain",
+  ],
+  zircuit: [
+    "https://mainnet.zircuit.com",
+    "https://rpc.ankr.com/zircuit",
+  ],
+  // Non-EVM chains (only the first URL is used)
+  solana: [
+    "https://api.mainnet-beta.solana.com",
+    "https://rpc.ankr.com/solana",
+    "https://solana.llamarpc.com",
+  ],
+  sui: [
+    "https://fullnode.mainnet.sui.io:443",
+    "https://rpc.ankr.com/sui",
+    "https://sui.llamarpc.com",
+  ],
+  iota: [
+    "https://api.mainnet.iota.cafe",
+  ],
 };
 
 const STORAGE_KEY = "earthbound.rpc_config.v1";

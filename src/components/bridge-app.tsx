@@ -2557,7 +2557,7 @@ function CustomOftSetupModal({
 }
 
 export function BridgeApp() {
-  const { wagmiConfig } = useRpcConfig();
+  const { wagmiConfig, updateBridgeEvmChains } = useRpcConfig();
   const [isRpcSettingsOpen, setIsRpcSettingsOpen] = useState(false);
   const { address, chainId, isConnected } = useAccount();
   const { connect, connectors, isPending: isConnectPending } = useConnect();
@@ -2659,6 +2659,25 @@ export function BridgeApp() {
       (chain) => chain.chainKey !== "stable",
     );
   }, [chainsQuery.data]);
+
+  // Stable dep string for EVM chain IDs to avoid infinite effect loops
+  const evmChainIdsDep = useMemo(
+    () =>
+      supportedChains
+        .filter((c) => c.chainType === "EVM")
+        .map((c) => c.chainId)
+        .sort((a, b) => a - b)
+        .join(","),
+    [supportedChains],
+  );
+
+  useEffect(() => {
+    if (!evmChainIdsDep) return;
+    const ids = evmChainIdsDep.split(",").map(Number).filter(Boolean);
+    updateBridgeEvmChains(ids);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evmChainIdsDep]);
+
   const chainByKey = useMemo(
     () => new Map(supportedChains.map((chain) => [chain.chainKey, chain])),
     [supportedChains],

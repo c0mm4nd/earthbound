@@ -2,6 +2,7 @@
 
 import { Connection, VersionedTransaction, clusterApiUrl } from "@solana/web3.js";
 import type { BridgeChainType, QuoteUserStep, TransactionPayload } from "@/lib/bridge-types";
+import { loadRpcConfig } from "@/lib/rpc-config";
 
 type WalletConnectResult = {
   address: string;
@@ -695,7 +696,9 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[]) {
     throw new Error("No Solana wallet found. Install Phantom or a compatible wallet.");
   }
 
-  const connection = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
+  const solanaRpcUrl =
+    loadRpcConfig()["solana"]?.[0] ?? clusterApiUrl("mainnet-beta");
+  const connection = new Connection(solanaRpcUrl, "confirmed");
   let lastSignature: string | undefined;
   let executedSteps = 0;
 

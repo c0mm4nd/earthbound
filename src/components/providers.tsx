@@ -22,27 +22,18 @@ import {
   useRef,
   useState,
 } from "react";
+import type { Chain } from "viem";
 import { WagmiProvider, type Config } from "wagmi";
-import { createWagmiConfig } from "@/lib/wagmi";
-import { loadRpcConfig, saveRpcConfig, type RpcConfig } from "@/lib/rpc-config";
-
-const { networkConfig: suiNetworkConfig } = createSuiNetworkConfig({
-  mainnet: {
-    network: "mainnet",
-    url: getJsonRpcFullnodeUrl("mainnet"),
-  },
-});
-
-const { networkConfig: iotaNetworkConfig } = createIotaNetworkConfig({
-  mainnet: {
-    url: getFullnodeUrl("mainnet"),
-  },
-});
+import { createWagmiConfig, walletChains } from "@/lib/wagmi";
+import { viemChainById } from "@/lib/viem-chains-by-id";
+import { loadRpcConfig, saveRpcConfig, getEffectiveRpcUrls, type RpcConfig } from "@/lib/rpc-config";
 
 type RpcConfigContextValue = {
   wagmiConfig: Config;
   rpcConfig: RpcConfig;
   updateRpcConfig: (config: RpcConfig) => void;
+  evmChains: readonly Chain[];
+  updateBridgeEvmChains: (chainIds: number[]) => void;
 };
 
 const RpcConfigContext = createContext<RpcConfigContextValue | null>(null);
@@ -51,6 +42,23 @@ export function useRpcConfig() {
   const ctx = useContext(RpcConfigContext);
   if (!ctx) throw new Error("useRpcConfig must be used within Providers");
   return ctx;
+}
+
+function buildSuiNetworkConfig(rpcConfig: RpcConfig) {
+  return createSuiNetworkConfig({
+    mainnet: {
+      network: "mainnet",
+      url: getEffectiveRpcUrls("sui", rpcConfig)[0] ?? getJsonRpcFullnodeUrl("mainnet"),
+    },
+  }).networkConfig;
+}
+
+function buildIotaNetworkConfig(rpcConfig: RpcConfig) {
+  return createIotaNetworkConfig({
+    mainnet: {
+      url: getEffectiveRpcUrls("iota", rpcConfig)[0] ?? getFullnodeUrl("mainnet"),
+    },
+  }).networkConfig;
 }
 
 export function Providers({
@@ -73,29 +81,73 @@ export function Providers({
   );
 
   const [rpcConfig, setRpcConfig] = useState<RpcConfig>(() => loadRpcConfig());
-  const [wagmiConfigKey, setWagmiConfigKey] = useState(0);
-  const wagmiConfigRef = useRef<Config>(createWagmiConfig(rpcConfig));
+  const [configKey, setConfigKey] = useState(0);
+  const [evmChains, setEvmChains] = useState<readonly Chain[]>(() => walletChains);
+  const evmChainsRef = useRef<readonly Chain[]>(walletChains);
+  const wagmiConfigRef = useRef<Config>(createWagmiConfig(walletChains, rpcConfig));
+  const suiNetworkConfigRef = useRef(buildSuiNetworkConfig(rpcConfig));
+  const iotaNetworkConfigRef = useRef(buildIotaNetworkConfig(rpcConfig));
+
+  // Keep ref in sync with state so callbacks can always read the latest value
+  evmChainsRef.current = evmChains;
 
   const updateRpcConfig = useCallback((config: RpcConfig) => {
     saveRpcConfig(config);
     setRpcConfig(config);
-    wagmiConfigRef.current = createWagmiConfig(config);
-    setWagmiConfigKey((k) => k + 1);
+    wagmiConfigRef.current = createWagmiConfig(evmChainsRef.current, config);
+    suiNetworkConfigRef.current = buildSuiNetworkConfig(config);
+    iotaNetworkConfigRef.current = buildIotaNetworkConfig(config);
+    setConfigKey((k) => k + 1);
+  }, []);
+
+  const updateBridgeEvmChains = useCallback((chainIds: number[]) => {
+    // Look up each chainId in viemChainById, merge with walletChains (dedup by id)
+    const walletChainIds = new Set<number>(walletChains.map((c) => c.id as number));
+    const extra: Chain[] = [];
+    for (const id of chainIds) {
+      if (!walletChainIds.has(id)) {
+        const chain = viemChainById[id];
+        if (chain) {
+          extra.push(chain);
+        }
+      }
+    }
+    const merged: readonly Chain[] = [...walletChains, ...extra];
+    setEvmChains(merged);
+    setRpcConfig((currentRpcConfig) => {
+      wagmiConfigRef.current = createWagmiConfig(merged, currentRpcConfig);
+      return currentRpcConfig;
+    });
+    setConfigKey((k) => k + 1);
   }, []);
 
   const rpcContextValue = useMemo(
-    () => ({ wagmiConfig: wagmiConfigRef.current, rpcConfig, updateRpcConfig }),
+    () => ({
+      wagmiConfig: wagmiConfigRef.current,
+      rpcConfig,
+      updateRpcConfig,
+      evmChains,
+      updateBridgeEvmChains,
+    }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [wagmiConfigKey, rpcConfig, updateRpcConfig],
+    [configKey, rpcConfig, updateRpcConfig, evmChains, updateBridgeEvmChains],
   );
 
   return (
     <RpcConfigContext.Provider value={rpcContextValue}>
-      <WagmiProvider key={wagmiConfigKey} config={wagmiConfigRef.current}>
+      <WagmiProvider key={`wagmi-${configKey}`} config={wagmiConfigRef.current}>
         <QueryClientProvider client={queryClient}>
-          <SuiClientProvider networks={suiNetworkConfig} defaultNetwork="mainnet">
+          <SuiClientProvider
+            key={`sui-${configKey}`}
+            networks={suiNetworkConfigRef.current}
+            defaultNetwork="mainnet"
+          >
             <SuiWalletProvider autoConnect>
-              <IotaClientProvider networks={iotaNetworkConfig} defaultNetwork="mainnet">
+              <IotaClientProvider
+                key={`iota-${configKey}`}
+                networks={iotaNetworkConfigRef.current}
+                defaultNetwork="mainnet"
+              >
                 <IotaWalletProvider autoConnect>
                   <TonConnectUIProvider manifestUrl={tonManifestUrl}>
                     {children}

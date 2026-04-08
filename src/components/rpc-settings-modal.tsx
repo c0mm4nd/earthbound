@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, useMemo, type FormEvent } from "react";
 import { useRpcConfig } from "@/components/providers";
 import {
   DEFAULT_RPC_URLS,
@@ -41,14 +41,41 @@ const CHAIN_DISPLAY_NAMES: Record<string, string> = {
   zircuit: "Zircuit",
 };
 
-const ALL_CHAIN_KEYS = Object.keys(walletChainByKey) as (keyof typeof walletChainByKey)[];
+const NON_EVM_CHAIN_KEYS = ["solana", "sui", "iota"] as const;
+const NON_EVM_CHAIN_DISPLAY_NAMES: Record<string, string> = {
+  solana: "Solana",
+  sui: "SUI",
+  iota: "IOTA",
+};
+
+// Reverse map: chainId → chainKey (for walletChainByKey entries)
+const chainKeyByWalletId: Record<number, string> = Object.fromEntries(
+  Object.entries(walletChainByKey).map(([key, chain]) => [chain.id, key]),
+);
 
 export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
-  const { rpcConfig, updateRpcConfig } = useRpcConfig();
+  const { rpcConfig, updateRpcConfig, evmChains } = useRpcConfig();
+
+  // Derive a stable key for each EVM chain: use walletChainByKey key if known, else chain.id.toString()
+  const evmChainEntries = useMemo(
+    () =>
+      evmChains.map((chain) => ({
+        chain,
+        key: chainKeyByWalletId[chain.id] ?? chain.id.toString(),
+        displayName:
+          CHAIN_DISPLAY_NAMES[chainKeyByWalletId[chain.id] ?? ""] ?? chain.name,
+      })),
+    [evmChains],
+  );
+
+  const allKeys = useMemo(
+    () => [...evmChainEntries.map((e) => e.key), ...NON_EVM_CHAIN_KEYS],
+    [evmChainEntries],
+  );
 
   const [drafts, setDrafts] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
-    for (const key of ALL_CHAIN_KEYS) {
+    for (const key of allKeys) {
       const saved = rpcConfig[key];
       init[key] = saved && saved.length > 0 ? saved.join("\n") : "";
     }
@@ -58,7 +85,7 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const next: RpcConfig = {};
-    for (const key of ALL_CHAIN_KEYS) {
+    for (const key of allKeys) {
       const urls = drafts[key]
         ?.split("\n")
         .map((u) => u.trim())
@@ -73,7 +100,7 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
 
   function handleReset() {
     const cleared: Record<string, string> = {};
-    for (const key of ALL_CHAIN_KEYS) {
+    for (const key of allKeys) {
       cleared[key] = "";
     }
     setDrafts(cleared);
@@ -86,14 +113,14 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
         <div className="flex items-start justify-between gap-4 p-5 pb-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
-              EVM Transports
+              EVM · Solana · SUI · IOTA
             </p>
             <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">
               RPC Configuration
             </h2>
             <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-              One URL per line. Leave blank to use built-in public fallbacks.
-              Changes take effect immediately.
+              One URL per line. EVM chains use all URLs as fallbacks; non-EVM chains use only the first.
+              Leave blank to use built-in public defaults. Changes take effect immediately.
             </p>
           </div>
           <button
@@ -109,17 +136,20 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
         {/* Scrollable chain list */}
         <form onSubmit={handleSubmit} className="flex min-h-0 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-2">
+            <p className="mb-3 text-[9px] font-semibold uppercase tracking-[0.24em] text-white/30">
+              EVM · Multiple fallbacks
+            </p>
             <div className="space-y-4">
-              {ALL_CHAIN_KEYS.map((chainKey) => {
-                const defaults = DEFAULT_RPC_URLS[chainKey] ?? [];
-                const effective = getEffectiveRpcUrls(chainKey, rpcConfig);
+              {evmChainEntries.map(({ chain, key, displayName }) => {
+                const defaults = DEFAULT_RPC_URLS[key] ?? [];
+                const effective = getEffectiveRpcUrls(key, rpcConfig);
                 const isCustomized =
-                  rpcConfig[chainKey] && rpcConfig[chainKey]!.length > 0;
+                  rpcConfig[key] && rpcConfig[key]!.length > 0;
                 return (
-                  <label key={chainKey} className="block space-y-1.5">
+                  <label key={chain.id} className="block space-y-1.5">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                        {CHAIN_DISPLAY_NAMES[chainKey] ?? chainKey}
+                        {displayName}
                       </span>
                       {isCustomized ? (
                         <span className="rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.2em] text-white/50">
@@ -133,15 +163,50 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
                     </div>
                     <textarea
                       rows={2}
-                      value={drafts[chainKey] ?? ""}
+                      value={drafts[key] ?? ""}
                       onChange={(e) =>
-                        setDrafts((prev) => ({ ...prev, [chainKey]: e.target.value }))
+                        setDrafts((prev) => ({ ...prev, [key]: e.target.value }))
                       }
                       placeholder={
                         defaults.length > 0
                           ? defaults.join("\n")
                           : "Uses chain default RPC"
                       }
+                      className={`${FIELD_CLASS} resize-none`}
+                      spellCheck={false}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+
+            <p className="mb-3 mt-6 text-[9px] font-semibold uppercase tracking-[0.24em] text-white/30">
+              Non-EVM · First URL used
+            </p>
+            <div className="space-y-4">
+              {NON_EVM_CHAIN_KEYS.map((chainKey) => {
+                const defaults = DEFAULT_RPC_URLS[chainKey] ?? [];
+                const isCustomized =
+                  rpcConfig[chainKey] && rpcConfig[chainKey]!.length > 0;
+                return (
+                  <label key={chainKey} className="block space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                        {NON_EVM_CHAIN_DISPLAY_NAMES[chainKey] ?? chainKey}
+                      </span>
+                      {isCustomized ? (
+                        <span className="rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.2em] text-white/50">
+                          Custom
+                        </span>
+                      ) : null}
+                    </div>
+                    <textarea
+                      rows={2}
+                      value={drafts[chainKey] ?? ""}
+                      onChange={(e) =>
+                        setDrafts((prev) => ({ ...prev, [chainKey]: e.target.value }))
+                      }
+                      placeholder={defaults.join("\n") || "Uses chain default RPC"}
                       className={`${FIELD_CLASS} resize-none`}
                       spellCheck={false}
                     />
