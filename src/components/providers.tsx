@@ -113,6 +113,20 @@ export function Providers({
       }
     }
     const merged: readonly Chain[] = [...walletChains, ...extra];
+
+    // Bail out if the chain set hasn't changed. This prevents an infinite remount
+    // loop: when WagmiProvider remounts (due to key change), BridgeApp also remounts
+    // and its useEffect re-fires with the same evmChainIdsDep, which would call this
+    // function again and trigger another remount.
+    const currentIds = new Set(evmChainsRef.current.map((c) => c.id));
+    const mergedIds = new Set(merged.map((c) => c.id));
+    if (
+      currentIds.size === mergedIds.size &&
+      [...mergedIds].every((id) => currentIds.has(id))
+    ) {
+      return;
+    }
+
     setEvmChains(merged);
     setRpcConfig((currentRpcConfig) => {
       wagmiConfigRef.current = createWagmiConfig(merged, currentRpcConfig);
