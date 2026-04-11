@@ -2611,6 +2611,7 @@ export function BridgeApp() {
   const [isFallbackEvmBalanceLoading, setIsFallbackEvmBalanceLoading] = useState(false);
   const customOftImportInputRef = useRef<HTMLInputElement | null>(null);
   const prevPreferredDestinationAddressRef = useRef<string>("");
+  const skipDstTokenResetRef = useRef(false);
   const balanceSwitchAttemptRef = useRef<string | null>(null);
   const notificationTimeoutsRef = useRef(new Map<string, number>());
   const quoteRequestIdRef = useRef(0);
@@ -4049,13 +4050,19 @@ export function BridgeApp() {
     });
   }, [srcChainKey, supportedChains]);
 
-  // Apply initial URL params once supportedChains are loaded
+  // Apply initial URL params once supportedChains (and tokens, if needed) are loaded
   useEffect(() => {
     if (initialUrlParamsRef.current.applied) return;
     if (supportedChains.length === 0) return;
 
-    initialUrlParamsRef.current.applied = true;
     const { srcChain, dstChain, srcToken, dstToken } = initialUrlParamsRef.current;
+
+    // If token params are present, wait for the tokens catalog too so the
+    // validation effect doesn't immediately clear them (srcTokens would be
+    // empty before the catalog loads and would trigger a spurious clear).
+    if ((srcToken || dstToken) && !tokensQuery.data) return;
+
+    initialUrlParamsRef.current.applied = true;
 
     if (srcChain && supportedChains.some((c) => c.chainKey === srcChain)) {
       setSrcChainKey(srcChain);
@@ -4063,9 +4070,14 @@ export function BridgeApp() {
     if (dstChain && dstChain !== srcChain && supportedChains.some((c) => c.chainKey === dstChain)) {
       setDstChainKey(dstChain);
     }
-    if (srcToken) setSrcTokenAddress(srcToken);
+    if (srcToken) {
+      // Setting srcTokenAddress triggers the [srcTokenAddress] cleanup effect which
+      // would clear dstTokenAddress. Use the skip flag to suppress that one-time reset.
+      if (dstToken) skipDstTokenResetRef.current = true;
+      setSrcTokenAddress(srcToken);
+    }
     if (dstToken) setDstTokenAddress(dstToken);
-  }, [supportedChains]);
+  }, [supportedChains, tokensQuery.data]);
 
   // Sync selected chain/token state to URL
   useEffect(() => {
@@ -4239,7 +4251,13 @@ export function BridgeApp() {
   }, [customOftConfigs, srcChainKey, srcTokenAddress, srcTokens]);
 
   useEffect(() => {
-    setDstTokenAddress("");
+    // Skip the dstTokenAddress reset when both src and dst tokens are being
+    // applied together from initial URL params (skipDstTokenResetRef is set).
+    if (skipDstTokenResetRef.current) {
+      skipDstTokenResetRef.current = false;
+    } else {
+      setDstTokenAddress("");
+    }
     setQuotes([]);
     setSelectedQuoteRouteKey(null);
     setQuoteError(null);
