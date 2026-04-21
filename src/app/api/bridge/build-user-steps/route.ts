@@ -4,6 +4,7 @@ import {
   fetchStargateApiJson,
   fetchStargateV2ApiJson,
 } from "@/lib/layerzero";
+import { normalizeBuildUserStepsResponse } from "@/lib/bridge-normalization";
 import type { BridgeApiProvider } from "@/lib/bridge-types";
 
 export async function POST(request: NextRequest) {
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: message }, { status: response.status });
     }
 
-    return NextResponse.json(data, { status: response.status });
+    return NextResponse.json(normalizeBuildUserStepsResponse(data), { status: response.status });
   } catch (error) {
     return NextResponse.json(
       {

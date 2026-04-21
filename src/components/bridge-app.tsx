@@ -263,6 +263,13 @@ function shortenAddress(address?: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
+function formatTransferStatus(status: string) {
+  return status
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function formatTimeLabel(timestamp: number) {
   return new Intl.DateTimeFormat("en-US", {
     hour: "2-digit",
@@ -4455,7 +4462,7 @@ export function BridgeApp() {
     pushExecutionNotification({
       tone: "neutral",
       title: "Execution started",
-      message: `${initialHistoryItem.srcChainName} to ${initialHistoryItem.dstChainName} · ${initialHistoryItem.srcAmount}`,
+      message: `${initialHistoryItem.srcChainName} → ${initialHistoryItem.dstChainName} · ${initialHistoryItem.srcAmount}`,
     });
 
     try {
@@ -4492,7 +4499,7 @@ export function BridgeApp() {
           pushExecutionNotification({
             tone: "neutral",
             title: "Switch network",
-            message: `Move wallet to ${srcChain.shortName} to continue.`,
+            message: `Switch your wallet to ${srcChain.shortName} to continue.`,
           });
           await switchEvmChain(srcChain);
         }
@@ -4529,7 +4536,7 @@ export function BridgeApp() {
             pushExecutionNotification({
               tone: "neutral",
               title: "Transaction submitted",
-              message: hash,
+              message: shortenAddress(hash),
             });
 
             await waitForEvmTransaction(srcChain, hash);
@@ -4679,7 +4686,7 @@ export function BridgeApp() {
             pushExecutionNotification({
               tone: "neutral",
               title: "Transfer update",
-              message: status.status,
+              message: formatTransferStatus(status.status),
             });
           }
         }
@@ -4715,7 +4722,7 @@ export function BridgeApp() {
         tone: succeeded ? "success" : "danger",
         title: succeeded ? "Transfer completed" : "Transfer failed",
         message: succeeded
-          ? `${initialHistoryItem.srcAmount} -> ${initialHistoryItem.expectedDstAmount}`
+          ? `${initialHistoryItem.srcAmount} → ${initialHistoryItem.expectedDstAmount}`
           : transferError ?? transferStatus.status,
         persistent: !succeeded,
       });
@@ -4917,8 +4924,8 @@ export function BridgeApp() {
     });
     pushExecutionNotification({
       tone: "neutral",
-      title: "Custom OFT started",
-      message: `${initialHistoryItem.srcChainName} to ${initialHistoryItem.dstChainName} · ${initialHistoryItem.srcAmount}`,
+      title: "Execution started",
+      message: `${initialHistoryItem.srcChainName} → ${initialHistoryItem.dstChainName} · ${initialHistoryItem.srcAmount}`,
     });
 
     try {

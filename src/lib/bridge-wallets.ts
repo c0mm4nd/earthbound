@@ -707,13 +707,12 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[]) {
       continue;
     }
 
-    const transaction = (step as { transaction?: { encoded?: unknown } }).transaction;
-    const encoded = transaction?.encoded as {
+    const encoded = getEncodedTransactionPayload(step) as {
       encoding?: string;
       data?: string;
-    };
+    } | null;
 
-    if (encoded.encoding !== "base64" || typeof encoded.data !== "string") {
+    if (encoded?.encoding !== "base64" || typeof encoded.data !== "string") {
       throw new Error("Unsupported Solana transaction payload.");
     }
 

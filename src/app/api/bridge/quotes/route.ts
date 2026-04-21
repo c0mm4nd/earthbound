@@ -5,6 +5,7 @@ import {
   fetchStargateApiJson,
   fetchStargateV2ApiJson,
 } from "@/lib/layerzero";
+import { normalizeBridgeQuoteResponse } from "@/lib/bridge-normalization";
 import type {
   BridgeApiProvider,
   BridgeQuote,
@@ -135,11 +136,17 @@ function normalizeQuoteFees(
 }
 
 function normalizeQuoteResponse(data: unknown) {
-  if (!data || typeof data !== "object" || !Array.isArray((data as BridgeQuoteResponse).quotes)) {
-    return data;
+  const normalizedData = normalizeBridgeQuoteResponse(data);
+
+  if (
+    !normalizedData ||
+    typeof normalizedData !== "object" ||
+    !Array.isArray((normalizedData as BridgeQuoteResponse).quotes)
+  ) {
+    return normalizedData;
   }
 
-  const response = data as BridgeQuoteResponse;
+  const response = normalizedData as BridgeQuoteResponse;
   const tokenById = buildQuoteTokenById(response.tokens);
 
   return {
