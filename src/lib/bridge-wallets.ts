@@ -1,5 +1,9 @@
 "use client";
 
+import { IotaClient, getFullnodeUrl } from "@iota/iota-sdk/client";
+import { IOTA_TYPE_ARG } from "@iota/iota-sdk/utils";
+import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
+import { SUI_TYPE_ARG } from "@mysten/sui/utils";
 import { Connection, PublicKey, VersionedTransaction, clusterApiUrl } from "@solana/web3.js";
 import type { BridgeChainType, QuoteUserStep, TransactionPayload } from "@/lib/bridge-types";
 import { loadRpcConfig } from "@/lib/rpc-config";
@@ -304,6 +308,26 @@ function getSolanaConnection() {
   const solanaRpcUrl =
     loadRpcConfig()["solana"]?.[0] ?? clusterApiUrl("mainnet-beta");
   return new Connection(solanaRpcUrl, "confirmed");
+}
+
+function getSuiClient() {
+  const suiRpcUrl = loadRpcConfig()["sui"]?.[0] ?? getJsonRpcFullnodeUrl("mainnet");
+  return new SuiJsonRpcClient({ network: "mainnet", url: suiRpcUrl });
+}
+
+function getIotaClient() {
+  const iotaRpcUrl = loadRpcConfig()["iota"]?.[0] ?? getFullnodeUrl("mainnet");
+  return new IotaClient({ url: iotaRpcUrl });
+}
+
+function getMoveCoinType(tokenAddress: string, nativeCoinType: string) {
+  const normalizedTokenAddress = tokenAddress.trim();
+
+  if (normalizedTokenAddress === NATIVE_TOKEN_ADDRESS) {
+    return nativeCoinType;
+  }
+
+  return normalizedTokenAddress.includes("::") ? normalizedTokenAddress : null;
 }
 
 function getParsedTokenAmount(value: unknown) {
@@ -741,6 +765,26 @@ export async function fetchExternalWalletBalance({
         const amount = getParsedTokenAmount(accountInfo);
         return amount === null ? total : total + BigInt(amount);
       }, BigInt(0));
+    }
+    case "SUI": {
+      const coinType = getMoveCoinType(tokenAddress, SUI_TYPE_ARG);
+
+      if (!coinType) {
+        return undefined;
+      }
+
+      const balance = await getSuiClient().getBalance({ owner: account, coinType });
+      return BigInt(balance.totalBalance);
+    }
+    case "IOTAMOVE": {
+      const coinType = getMoveCoinType(tokenAddress, IOTA_TYPE_ARG);
+
+      if (!coinType) {
+        return undefined;
+      }
+
+      const balance = await getIotaClient().getBalance({ owner: account, coinType });
+      return BigInt(balance.totalBalance);
     }
     default:
       return undefined;

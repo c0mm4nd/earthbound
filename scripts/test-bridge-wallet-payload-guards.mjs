@@ -31,10 +31,37 @@ const sandbox = {
     if (specifier === "@solana/web3.js") {
       return {
         Connection: class Connection {},
+        PublicKey: class PublicKey {},
         VersionedTransaction: {
           deserialize: () => ({}),
         },
         clusterApiUrl: () => "https://api.mainnet-beta.solana.com",
+      };
+    }
+
+    if (specifier === "@mysten/sui/jsonRpc") {
+      return {
+        SuiJsonRpcClient: class SuiJsonRpcClient {},
+        getJsonRpcFullnodeUrl: () => "https://fullnode.mainnet.sui.io:443",
+      };
+    }
+
+    if (specifier === "@mysten/sui/utils") {
+      return {
+        SUI_TYPE_ARG: "0x2::sui::SUI",
+      };
+    }
+
+    if (specifier === "@iota/iota-sdk/client") {
+      return {
+        IotaClient: class IotaClient {},
+        getFullnodeUrl: () => "https://api.mainnet.iota.cafe",
+      };
+    }
+
+    if (specifier === "@iota/iota-sdk/utils") {
+      return {
+        IOTA_TYPE_ARG: "0x2::iota::IOTA",
       };
     }
 

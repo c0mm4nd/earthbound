@@ -38,11 +38,15 @@ const sandbox = {
 
           async getParsedTokenAccountsByOwner(owner, filter) {
             calls.push(["getParsedTokenAccountsByOwner", owner.toBase58(), filter.mint.toBase58()]);
+            const tokenBalances = {
+              DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT: ["42000000000", "8000000000"],
+              Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN: ["123000000000"],
+            };
+            const balances = tokenBalances[filter.mint.toBase58()] ?? ["42", "8"];
             return {
-              value: [
-                { account: { data: { parsed: { info: { tokenAmount: { amount: "42" } } } } } },
-                { account: { data: { parsed: { info: { tokenAmount: { amount: "8" } } } } } },
-              ],
+              value: balances.map((amount) => ({
+                account: { data: { parsed: { info: { tokenAmount: { amount } } } } },
+              })),
             };
           }
         },
@@ -64,7 +68,55 @@ const sandbox = {
 
     if (specifier === "@/lib/rpc-config") {
       return {
-        loadRpcConfig: () => ({ solana: ["https://custom-solana.example"] }),
+        loadRpcConfig: () => ({
+          solana: ["https://custom-solana.example"],
+          sui: ["https://custom-sui.example"],
+          iota: ["https://custom-iota.example"],
+        }),
+      };
+    }
+
+    if (specifier === "@mysten/sui/jsonRpc") {
+      return {
+        SuiJsonRpcClient: class SuiJsonRpcClient {
+          constructor(options) {
+            calls.push(["sui-client", options.url]);
+          }
+
+          async getBalance({ owner, coinType }) {
+            calls.push(["sui-getBalance", owner, coinType]);
+            return { totalBalance: coinType === "0x2::sui::SUI" ? "900" : "91" };
+          }
+        },
+        getJsonRpcFullnodeUrl: () => "https://sui-mainnet.example",
+      };
+    }
+
+    if (specifier === "@mysten/sui/utils") {
+      return {
+        SUI_TYPE_ARG: "0x2::sui::SUI",
+      };
+    }
+
+    if (specifier === "@iota/iota-sdk/client") {
+      return {
+        IotaClient: class IotaClient {
+          constructor(options) {
+            calls.push(["iota-client", options.url]);
+          }
+
+          async getBalance({ owner, coinType }) {
+            calls.push(["iota-getBalance", owner, coinType]);
+            return { totalBalance: coinType === "0x2::iota::IOTA" ? "700" : "71" };
+          }
+        },
+        getFullnodeUrl: () => "https://iota-mainnet.example",
+      };
+    }
+
+    if (specifier === "@iota/iota-sdk/utils") {
+      return {
+        IOTA_TYPE_ARG: "0x2::iota::IOTA",
       };
     }
 
@@ -89,14 +141,95 @@ assert.equal(
   await fetchExternalWalletBalance({
     chainType: "SOLANA",
     account: "solana-owner",
-    tokenAddress: "spl-token-mint",
+    tokenAddress: "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
   }),
-  50n,
+  50000000000n,
+);
+
+assert.equal(
+  await fetchExternalWalletBalance({
+    chainType: "SOLANA",
+    account: "solana-owner",
+    tokenAddress: "Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN",
+  }),
+  123000000000n,
+);
+
+assert.equal(
+  await fetchExternalWalletBalance({
+    chainType: "SUI",
+    account: "sui-owner",
+    tokenAddress: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  }),
+  900n,
+);
+
+assert.equal(
+  await fetchExternalWalletBalance({
+    chainType: "SUI",
+    account: "sui-owner",
+    tokenAddress: "0x123::coin::COIN",
+  }),
+  91n,
+);
+
+assert.equal(
+  await fetchExternalWalletBalance({
+    chainType: "IOTAMOVE",
+    account: "iota-owner",
+    tokenAddress: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  }),
+  700n,
+);
+
+assert.equal(
+  await fetchExternalWalletBalance({
+    chainType: "IOTAMOVE",
+    account: "iota-owner",
+    tokenAddress: "0x456::coin::COIN",
+  }),
+  71n,
+);
+
+assert.equal(
+  await fetchExternalWalletBalance({
+    chainType: "APTOS",
+    account: "aptos-owner",
+    tokenAddress: "0xf37a8864fe737eb8ec2c2931047047cbaed1beed3fb0e5b7c5526dafd3b9c2e9",
+  }),
+  undefined,
+);
+
+assert.equal(
+  await fetchExternalWalletBalance({
+    chainType: "TON",
+    account: "ton-owner",
+    tokenAddress: "0x086fa2a675f74347b08dd4606a549b8fdb98829cb282bc1949d3b12fbaed9dcc",
+  }),
+  undefined,
 );
 
 assert.deepEqual(calls, [
   ["connection", "https://custom-solana.example", "confirmed"],
   ["getBalance", "solana-owner"],
   ["connection", "https://custom-solana.example", "confirmed"],
-  ["getParsedTokenAccountsByOwner", "solana-owner", "spl-token-mint"],
+  [
+    "getParsedTokenAccountsByOwner",
+    "solana-owner",
+    "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+  ],
+  ["connection", "https://custom-solana.example", "confirmed"],
+  [
+    "getParsedTokenAccountsByOwner",
+    "solana-owner",
+    "Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN",
+  ],
+  ["sui-client", "https://custom-sui.example"],
+  ["sui-getBalance", "sui-owner", "0x2::sui::SUI"],
+  ["sui-client", "https://custom-sui.example"],
+  ["sui-getBalance", "sui-owner", "0x123::coin::COIN"],
+  ["iota-client", "https://custom-iota.example"],
+  ["iota-getBalance", "iota-owner", "0x2::iota::IOTA"],
+  ["iota-client", "https://custom-iota.example"],
+  ["iota-getBalance", "iota-owner", "0x456::coin::COIN"],
 ]);
