@@ -64,6 +64,7 @@ import {
   validateAddressForChainType,
 } from "@/lib/bridge-chain-utils";
 import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
+import { fetchExternalWalletBalance } from "@/lib/bridge-wallets";
 import {
   buildCustomOftApprovalTransaction,
   buildCustomOftRecipientBytes32,
@@ -2616,6 +2617,10 @@ export function BridgeApp() {
   const [isOftDiscoveryModalOpen, setIsOftDiscoveryModalOpen] = useState(false);
   const [fallbackEvmBalanceValue, setFallbackEvmBalanceValue] = useState<bigint | undefined>();
   const [isFallbackEvmBalanceLoading, setIsFallbackEvmBalanceLoading] = useState(false);
+  const [externalWalletBalanceValue, setExternalWalletBalanceValue] = useState<
+    bigint | undefined
+  >();
+  const [isExternalWalletBalanceLoading, setIsExternalWalletBalanceLoading] = useState(false);
   const customOftImportInputRef = useRef<HTMLInputElement | null>(null);
   const prevPreferredDestinationAddressRef = useRef<string>("");
   const skipDstTokenResetRef = useRef(false);
@@ -2942,9 +2947,6 @@ export function BridgeApp() {
   const sourceWalletConnected = sourceChainUsesEvmWallet
     ? Boolean(address && isConnected)
     : Boolean(activeExternalWalletSession?.address);
-  const sourceWalletLabel = sourceChainUsesEvmWallet
-    ? "EVM Wallet"
-    : activeExternalWalletSession?.label ?? getChainTypeDisplayLabel(sourceChainType);
   const destinationWalletLabel =
     destinationChainType === "EVM"
       ? "EVM Wallet"
@@ -3329,6 +3331,13 @@ export function BridgeApp() {
       chainId === activeSrcChain.chainId &&
       isConnected,
   );
+  const externalBalanceEnabled = Boolean(
+    !sourceChainUsesEvmWallet &&
+      sourceChainType &&
+      sourceWalletAddress &&
+      activeBalanceToken &&
+      sourceWalletConnected,
+  );
   const supportedSrcChainId = sourceChainHasConfiguredWallet
     ? (activeSrcChain?.chainId as SupportedChainId | undefined)
     : undefined;
@@ -3413,18 +3422,73 @@ export function BridgeApp() {
     };
   }, [activeBalanceToken, address, balanceEnabled, sourceChainHasConfiguredWallet]);
 
-  const selectedBalanceValue =
+  useEffect(() => {
+    if (
+      !externalBalanceEnabled ||
+      !sourceChainType ||
+      !sourceWalletAddress ||
+      !activeBalanceToken
+    ) {
+      setExternalWalletBalanceValue(undefined);
+      setIsExternalWalletBalanceLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+    setIsExternalWalletBalanceLoading(true);
+
+    void fetchExternalWalletBalance({
+      chainType: sourceChainType,
+      account: sourceWalletAddress,
+      tokenAddress: activeBalanceToken.address,
+    })
+      .then((value) => {
+        if (isCancelled) {
+          return;
+        }
+
+        setExternalWalletBalanceValue(value);
+      })
+      .catch(() => {
+        if (isCancelled) {
+          return;
+        }
+
+        setExternalWalletBalanceValue(undefined);
+      })
+      .finally(() => {
+        if (isCancelled) {
+          return;
+        }
+
+        setIsExternalWalletBalanceLoading(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeBalanceToken, externalBalanceEnabled, sourceChainType, sourceWalletAddress]);
+
+  const selectedEvmBalanceValue =
     sourceChainHasConfiguredWallet
       ? activeBalanceToken && isNativeToken(activeBalanceToken.address)
         ? nativeBalanceQuery.data?.value
         : erc20BalanceQuery.data
       : fallbackEvmBalanceValue;
 
-  const isBalanceLoading = sourceChainHasConfiguredWallet
+  const isEvmBalanceLoading = sourceChainHasConfiguredWallet
     ? activeBalanceToken && isNativeToken(activeBalanceToken.address)
       ? nativeBalanceQuery.isPending
       : erc20BalanceQuery.isPending
     : isFallbackEvmBalanceLoading;
+
+  const selectedBalanceValue = sourceChainUsesEvmWallet
+    ? selectedEvmBalanceValue
+    : externalWalletBalanceValue;
+
+  const isBalanceLoading = sourceChainUsesEvmWallet
+    ? isEvmBalanceLoading
+    : isExternalWalletBalanceLoading;
 
   const balanceCopy = useMemo(() => {
     if (!activeBalanceToken) {
@@ -3435,11 +3499,7 @@ export function BridgeApp() {
       return walletConnectButtonCopy;
     }
 
-    if (!sourceChainUsesEvmWallet) {
-      return `${sourceWalletLabel} connected`;
-    }
-
-    if (activeSrcChain && chainId !== activeSrcChain.chainId) {
+    if (sourceChainUsesEvmWallet && activeSrcChain && chainId !== activeSrcChain.chainId) {
       return isSwitchPending ? "Switching..." : "Auto switching...";
     }
 
@@ -3466,7 +3526,6 @@ export function BridgeApp() {
     selectedBalanceValue,
     sourceChainUsesEvmWallet,
     sourceWalletConnected,
-    sourceWalletLabel,
     walletConnectButtonCopy,
   ]);
 

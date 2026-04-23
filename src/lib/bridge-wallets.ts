@@ -1,6 +1,6 @@
 "use client";
 
-import { Connection, VersionedTransaction, clusterApiUrl } from "@solana/web3.js";
+import { Connection, PublicKey, VersionedTransaction, clusterApiUrl } from "@solana/web3.js";
 import type { BridgeChainType, QuoteUserStep, TransactionPayload } from "@/lib/bridge-types";
 import { loadRpcConfig } from "@/lib/rpc-config";
 
@@ -8,6 +8,18 @@ type WalletConnectResult = {
   address: string;
   label: string;
 };
+
+type WalletBalanceRequest = {
+  chainType: BridgeChainType | undefined | null;
+  account: string;
+  tokenAddress: string;
+};
+
+const NATIVE_TOKEN_ADDRESS = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const SOLANA_NATIVE_TOKEN_ADDRESSES = new Set([
+  NATIVE_TOKEN_ADDRESS,
+  "11111111111111111111111111111111",
+]);
 
 type SolanaWalletPublicKey = {
   toBase58(): string;
@@ -286,6 +298,25 @@ function getSolanaWalletProvider() {
   }
 
   return window.phantom?.solana ?? window.solana ?? null;
+}
+
+function getSolanaConnection() {
+  const solanaRpcUrl =
+    loadRpcConfig()["solana"]?.[0] ?? clusterApiUrl("mainnet-beta");
+  return new Connection(solanaRpcUrl, "confirmed");
+}
+
+function getParsedTokenAmount(value: unknown) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const account = isRecord(value.account) ? value.account : null;
+  const data = isRecord(account?.data) ? account.data : null;
+  const parsed = isRecord(data?.parsed) ? data.parsed : null;
+  const info = isRecord(parsed?.info) ? parsed.info : null;
+  const tokenAmount = isRecord(info?.tokenAmount) ? info.tokenAmount : null;
+  return getString(tokenAmount?.amount);
 }
 
 function getTronWebProvider() {
@@ -689,6 +720,33 @@ export async function disconnectExternalWallet(chainType: BridgeChainType | unde
   }
 }
 
+export async function fetchExternalWalletBalance({
+  chainType,
+  account,
+  tokenAddress,
+}: WalletBalanceRequest) {
+  switch (chainType) {
+    case "SOLANA": {
+      const connection = getSolanaConnection();
+      const owner = new PublicKey(account);
+      const normalizedTokenAddress = tokenAddress.trim();
+
+      if (SOLANA_NATIVE_TOKEN_ADDRESSES.has(normalizedTokenAddress)) {
+        return BigInt(await connection.getBalance(owner));
+      }
+
+      const mint = new PublicKey(normalizedTokenAddress);
+      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(owner, { mint });
+      return tokenAccounts.value.reduce((total, accountInfo) => {
+        const amount = getParsedTokenAmount(accountInfo);
+        return amount === null ? total : total + BigInt(amount);
+      }, BigInt(0));
+    }
+    default:
+      return undefined;
+  }
+}
+
 export async function executeSolanaUserSteps(userSteps: QuoteUserStep[]) {
   const provider = getSolanaWalletProvider();
 
@@ -696,9 +754,7 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[]) {
     throw new Error("No Solana wallet found. Install Phantom or a compatible wallet.");
   }
 
-  const solanaRpcUrl =
-    loadRpcConfig()["solana"]?.[0] ?? clusterApiUrl("mainnet-beta");
-  const connection = new Connection(solanaRpcUrl, "confirmed");
+  const connection = getSolanaConnection();
   let lastSignature: string | undefined;
   let executedSteps = 0;
 
