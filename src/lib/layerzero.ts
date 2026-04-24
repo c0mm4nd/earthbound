@@ -1,6 +1,6 @@
 const VT_API_BASE = "https://transfer.layerzero-api.com/v1";
 const OFT_API_BASE = "https://metadata.layerzero-api.com/v1/metadata/experiment/ofts";
-const STARGATE_API_BASE = "https://stargate.finance/api/vt";
+const STARGATE_API_BASE = "https://stargate.finance/api/vt/v1";
 const STARGATE_V2_API_BASE = "https://stargate.finance/api/v2";
 const STARGATE_WEB_API_BASE = "https://stargate.finance/api";
 const STARGATE_REFERER = "https://stargate.finance/";
