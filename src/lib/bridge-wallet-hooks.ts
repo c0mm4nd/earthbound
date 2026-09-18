@@ -227,26 +227,41 @@ export function useBridgeWallets() {
   async function executeUserSteps(
     chainType: BridgeChainType | undefined | null,
     userSteps: QuoteUserStep[],
+    expectedAccount: string,
   ) {
+    if (!expectedAccount) throw new Error("Connect the source wallet and refresh the quote.");
     switch (chainType) {
       case "SOLANA":
-        return executeSolanaUserSteps(userSteps);
+        return executeSolanaUserSteps(userSteps, expectedAccount);
       case "APTOS":
-        return executeAptosUserSteps(userSteps);
+        return executeAptosUserSteps(userSteps, expectedAccount);
       case "TRON":
-        return executeTronUserSteps(userSteps);
+        return executeTronUserSteps(userSteps, expectedAccount);
       case "STARKNET":
-        return executeStarknetUserSteps(userSteps);
+        return executeStarknetUserSteps(userSteps, expectedAccount);
       case "TON":
-        return executeTonUserSteps(userSteps, (request) => tonConnectUI.sendTransaction(request));
-      case "SUI":
+        if (tonWallet?.account.chain !== "-239") throw new Error("Connect a TON mainnet wallet before sending.");
+        if (expectedAccount !== tonFriendlyAddress && expectedAccount !== tonRawAddress)
+          throw new Error("TON wallet changed. Refresh the quote.");
+        if (tonConnectUI.account?.address !== tonWallet.account.address || tonConnectUI.account?.chain !== "-239")
+          throw new Error("TON wallet changed. Refresh the quote.");
+        return executeTonUserSteps(userSteps, (request) => tonConnectUI.sendTransaction({
+          ...request, network: tonWallet.account.chain, from: tonWallet.account.address,
+        }));
+      case "SUI": {
+        const account = currentSuiWallet?.accounts.find((candidate) => candidate.address === expectedAccount);
+        if (!account) throw new Error("Source wallet changed. Refresh the quote.");
         return executeSuiUserSteps(userSteps, ({ transaction, chain }) =>
-          signAndExecuteSuiTransaction({ transaction, chain }),
+          signAndExecuteSuiTransaction({ transaction, chain, account }),
         );
-      case "IOTAMOVE":
+      }
+      case "IOTAMOVE": {
+        const account = currentIotaWallet?.accounts.find((candidate) => candidate.address === expectedAccount);
+        if (!account) throw new Error("Source wallet changed. Refresh the quote.");
         return executeIotaMoveUserSteps(userSteps, ({ transaction, chain }) =>
-          signAndExecuteIotaTransaction({ transaction, chain }),
+          signAndExecuteIotaTransaction({ transaction, chain, account }),
         );
+      }
       default:
         throw new Error("Unsupported execution chain type.");
     }

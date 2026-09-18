@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { headers } from "next/headers";
 import { Providers } from "@/components/providers";
+import { getAppOrigin } from "@/lib/app-origin";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -26,19 +27,7 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const requestHeaders = await headers();
-  const forwardedProto = requestHeaders.get("x-forwarded-proto");
-  const forwardedHost = requestHeaders.get("x-forwarded-host");
-  const host = forwardedHost ?? requestHeaders.get("host");
-  const protocol = forwardedProto ?? (process.env.NODE_ENV === "development" ? "http" : "https");
-  const appUrl =
-    process.env.NEXT_PUBLIC_APP_URL ??
-    process.env.VERCEL_PROJECT_PRODUCTION_URL ??
-    process.env.VERCEL_URL;
-  const origin = host
-    ? `${protocol}://${host}`
-    : appUrl
-      ? `${appUrl.startsWith("http://") || appUrl.startsWith("https://") ? "" : "https://"}${appUrl}`
-      : "http://localhost:3000";
+  const origin = getAppOrigin(requestHeaders);
   const tonManifestUrl = `${origin}/tonconnect-manifest.json`;
 
   return (

@@ -19,16 +19,36 @@ This repository contains the Next.js application and its thin server-side proxy 
 
 Earthbound currently supports four practical operating modes:
 
-### 1. Stargate
+### Default: direct OFT transfers
 
-This is the default mode.
+The main transfer form now defaults to direct Endpoint V2 OFT contract calls on the configured EVM networks and Solana ↔ EVM routes. Earthbound discovers the mesh from LayerZero metadata by token address, verifies both peers, underlying tokens, decimals, and enforced receive gas, then calls `quoteOFT`, `quoteSend`, and `send`. ERC20 approvals target the OFT contract directly. This path does not use Stargate quote transactions or its product-fee wrapper and needs no LayerZero Transfer API key.
+
+For EVM pairs missing from the metadata directory, discovery probes the selected tokens for OFT peers in either direction. If neither token exposes the mesh, it requests a Stargate quote and decodes standard OFT `send` targets from supported transaction envelopes as candidate addresses. Every candidate must pass on-chain token and reciprocal-peer checks before the normal quote validation runs. API amounts, approvals, wrapper calls, and fees are never reused for execution. This discovery fallback currently applies to EVM ↔ EVM pairs only.
+
+`LIVE_SIERRA_OFT=1 node scripts/test-direct-oft.mjs` checks SIERRA Ethereum ↔ Avalanche using mainnet reads and compares the Stargate API quote with direct receipts. It never signs or broadcasts a transaction.
+
+Receive amounts reflect on-chain quotes, including local/shared decimal conversion and any OFT contract fee or reward. Direct integration removes the Stargate product fee; it does not promise 1:1 receipt for contracts that charge their own fee, or eliminate messaging and source transaction gas costs.
+
+Unsupported meshes, native assets, other non-EVM networks, or failed validation stop with an error. There is no automatic fallback to a fee-bearing API route. Users can explicitly enable **Use API routes (may include Stargate product fees)** for the existing API flow below. Custom OFT discovery/import remains available for selecting a specific mesh.
+
+Solana uses a lazily loaded official OFT SDK adapter. It validates the OFT Store PDA, program ownership, mint, peer, decimal conversion, and token program. EVM → Solana derives the recipient ATA and adds only missing account-creation rent beyond the enforced receive value. Solana → EVM builds an unsigned v0 transaction with the official LayerZero lookup table and simulates it before wallet signing. Wallet execution checks the payer and expiry and confirms against the transaction's original blockhash; failed on-chain transactions are reported as failures.
+
+The Solana adapter supports the standard SDK account layout and SPL Token, plus Token-2022 mints with only metadata extensions. Custom OFT layouts, transfer hooks, transfer-fee extensions, and Endpoint V1 meshes are rejected explicitly. Solana source wallets need an existing associated token account and SOL for messaging and transaction fees. Configure a Solana RPC in RPC settings if the public endpoint is rate limited.
+
+Run `node scripts/test-solana-direct-oft.mjs` and `node scripts/test-solana-oft-adapter.mjs` for offline coverage. `LIVE_SOLANA_OFT=1 node scripts/test-solana-direct-oft.mjs` checks mainnet EVM → Solana quotes. Also set `SOLANA_SIMULATION_OWNER` to a funded public APE holder address to check Solana → EVM quotes and signature-disabled send simulation; otherwise that reverse check is explicitly skipped. No private key is needed, and the live check never signs or broadcasts transactions.
+
+Direct transactions are re-quoted before execution and again after approvals. Worse receive amounts or higher messaging fees require a new quote. Source confirmation is tracked locally; destination settlement is linked to LayerZeroScan rather than queried with an API quote ID.
+
+### 1. Stargate (API routes)
+
+This is the default provider when users explicitly enable API routes.
 
 - Quotes, user steps, and status requests are routed through `https://stargate.finance/api/vt/*`
 - The interface is intentionally tuned to feel close to Stargate's production bridge flow
 
 ### 2. LayerZero Direct API
 
-Users can switch to LayerZero mode from the UI.
+When API routes are enabled, users can switch to LayerZero mode from the UI.
 
 - Requests are routed through `https://transfer.layerzero-api.com/v1/*`
 - The app asks the user for a LayerZero API key before enabling direct mode
@@ -158,6 +178,19 @@ LAYERZERO_API_KEY=lz_...
 - If no key is available at all, the app falls back to Stargate v2 where possible
 
 ## Deployment Notes
+
+The Railway deployment target is the `earthbound` service in the `web3research` project's `production` environment. Its generated public domain is `earthbound-production.up.railway.app`. The multi-stage Dockerfile builds Next.js standalone output and serves it as a non-root user on Railway's `PORT` (default 3000).
+
+`railway.json` enables Serverless auto-sleep (`sleepApplication: true`), uses one replica, and checks `/api/health` during deployment. Next.js telemetry is disabled in the build and runtime images. There are no server-side keepalive jobs; active browser quote requests still count as traffic and can keep the service awake. Railway controls the idle threshold, and the first visit after sleeping can incur a cold start.
+
+Deploy the current working tree with the Railway CLI after linking the target service:
+
+```bash
+railway link --project web3research --service earthbound --environment production
+railway up --service earthbound
+```
+
+The default direct OFT path needs no API key. `LAYERZERO_API_KEY` remains optional for LayerZero API routes. Set secrets as Railway service variables; `.env` files are excluded from Docker build context. Request forwarding headers and `RAILWAY_PUBLIC_DOMAIN` supply the public origin; `NEXT_PUBLIC_APP_URL` is an optional override.
 
 TON Connect requires a publicly reachable manifest. This project exposes one at:
 

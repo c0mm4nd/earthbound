@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   erc20Abi,
   formatUnits,
@@ -11,6 +11,8 @@ import {
 } from "viem";
 import {
   readContract,
+  getAccount,
+  getPublicClient,
   sendTransaction,
   signTypedData,
   waitForTransactionReceipt,
@@ -52,7 +54,6 @@ import type {
   QuoteUserStep,
   SignatureUserStep,
   SignatureTypedDataField,
-  TransactionPayload,
   TransactionUserStep,
 } from "@/lib/bridge-types";
 import {
@@ -63,27 +64,19 @@ import {
   getWalletConnectLabel,
   validateAddressForChainType,
 } from "@/lib/bridge-chain-utils";
+import { assertExecutionPlan, assertSuccessfulEvmReceipt } from "@/lib/execution-safety";
+import { buildCustomOftQuote } from "@/lib/custom-oft-quote";
+import { buildDirectOftQuote } from "@/lib/direct-oft";
 import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
 import { fetchExternalWalletBalance } from "@/lib/bridge-wallets";
 import {
-  buildCustomOftApprovalTransaction,
-  buildCustomOftRecipientBytes32,
-  buildCustomOftSendTransaction,
-  buildDefaultCustomOftExtraOptions,
-  getLayerZeroV2EndpointId,
   isLocalCustomOftDestinationChainSupported,
   isLocalCustomOftSourceChainSupported,
   isSupportedCustomOftEndpointVersion,
-  layerZeroOftV2Abi,
-  type LayerZeroMessagingFee,
-  type LayerZeroOftV2SendParam,
 } from "@/lib/custom-oft";
 import {
   fetchInjectedEvmBalance,
-  readInjectedEvmContract,
-  sendInjectedEvmTransaction,
   switchInjectedEvmChain,
-  waitForInjectedEvmTransactionReceipt,
 } from "@/lib/injected-evm";
 import {
   walletChainByKey,
@@ -1187,162 +1180,6 @@ function normalizeOftDiscoveryEntries(
   });
 }
 
-function buildCustomOftUserSteps(
-  srcChain: BridgeChain,
-  approvalTransaction: TransactionPayload | null,
-  populatedTransaction: TransactionPayload,
-) {
-  const steps: QuoteUserStep[] = [];
-
-  if (srcChain.chainType === "EVM") {
-    if (approvalTransaction) {
-      steps.push({
-        type: "TRANSACTION",
-        chainKey: srcChain.chainKey,
-        chainType: srcChain.chainType,
-        description: "Approve token spending",
-        transaction: {
-          encoded: approvalTransaction,
-        },
-      });
-    }
-
-    steps.push({
-      type: "TRANSACTION",
-      chainKey: srcChain.chainKey,
-      chainType: srcChain.chainType,
-      description: "Send OFT transfer",
-      transaction: {
-        encoded: populatedTransaction,
-      },
-    });
-
-    return steps;
-  }
-
-  throw new Error(
-    `Custom OFT execution is not supported for ${getChainTypeDisplayLabel(srcChain.chainType)} in this build.`,
-  );
-}
-
-async function buildLocalCustomOftTransfer(args: {
-  config: Pick<CustomOftConfig, "endpointVersion">;
-  srcChain: BridgeChain;
-  dstChain: BridgeChain;
-  sourceDeployment: CustomOftDeployment;
-  amount: bigint;
-  from: string;
-  to: string;
-  readContractForChain: <T>(args: {
-    abi: Abi;
-    address: Address;
-    args?: readonly unknown[];
-    chain: BridgeChain;
-    functionName: string;
-  }) => Promise<T>;
-}) {
-  const { amount, config, dstChain, from, readContractForChain, sourceDeployment, srcChain, to } =
-    args;
-
-  if (!isSupportedCustomOftEndpointVersion(config.endpointVersion)) {
-    throw new Error("Local custom OFT execution currently supports Endpoint V2 meshes only.");
-  }
-
-  if (srcChain.chainType !== "EVM") {
-    throw new Error("Local custom OFT execution currently supports EVM source chains only.");
-  }
-
-  const dstEid = getLayerZeroV2EndpointId(dstChain.chainKey);
-
-  if (!dstEid) {
-    throw new Error(`No LayerZero V2 endpoint ID is configured for ${dstChain.shortName}.`);
-  }
-
-  const baseSendParam: LayerZeroOftV2SendParam = {
-    dstEid,
-    to: buildCustomOftRecipientBytes32(dstChain.chainType, to),
-    amountLD: amount,
-    minAmountLD: BigInt(0),
-    extraOptions: buildDefaultCustomOftExtraOptions(dstChain.chainType),
-    composeMsg: "0x",
-    oftCmd: "0x",
-  };
-  const quoteOftResult = await readContractForChain<readonly [unknown, unknown, { amountReceivedLD: bigint }]>(
-    {
-    address: sourceDeployment.oftAddress as Address,
-    abi: layerZeroOftV2Abi,
-    functionName: "quoteOFT",
-    args: [baseSendParam],
-    chain: srcChain,
-  },
-  );
-  const oftReceipt = quoteOftResult[2];
-  const quotedAmountReceivedLD = oftReceipt.amountReceivedLD;
-
-  if (quotedAmountReceivedLD <= BigInt(0)) {
-    throw new Error("This OFT quote returned zero destination amount.");
-  }
-
-  const sendParam: LayerZeroOftV2SendParam = {
-    ...baseSendParam,
-    minAmountLD: quotedAmountReceivedLD,
-  };
-  const fee = await readContractForChain<LayerZeroMessagingFee>({
-    address: sourceDeployment.oftAddress as Address,
-    abi: layerZeroOftV2Abi,
-    functionName: "quoteSend",
-    args: [sendParam, false],
-    chain: srcChain,
-  });
-
-  let approvalRequired = sourceDeployment.approvalRequired ?? false;
-  let tokenAddress = sourceDeployment.tokenAddress ?? null;
-
-  try {
-    approvalRequired = await readContractForChain<boolean>({
-      address: sourceDeployment.oftAddress as Address,
-      abi: layerZeroOftV2Abi,
-      functionName: "approvalRequired",
-      chain: srcChain,
-    });
-  } catch {
-    approvalRequired = sourceDeployment.approvalRequired ?? false;
-  }
-
-  if (approvalRequired && !tokenAddress) {
-    try {
-      tokenAddress = await readContractForChain<Address>({
-        address: sourceDeployment.oftAddress as Address,
-        abi: layerZeroOftV2Abi,
-        functionName: "token",
-        chain: srcChain,
-      });
-    } catch {
-      tokenAddress = sourceDeployment.tokenAddress ?? null;
-    }
-  }
-
-  if (approvalRequired && !tokenAddress) {
-    throw new Error("This OFT requires approval, but the spend token address could not be resolved.");
-  }
-
-  const approvalTransaction =
-    approvalRequired && tokenAddress
-      ? buildCustomOftApprovalTransaction(tokenAddress, sourceDeployment.oftAddress, amount)
-      : null;
-  const populatedTransaction = buildCustomOftSendTransaction(
-    sourceDeployment.oftAddress,
-    sendParam,
-    fee,
-    from,
-  );
-
-  return {
-    userSteps: buildCustomOftUserSteps(srcChain, approvalTransaction, populatedTransaction),
-    quotedAmountReceivedLD,
-  };
-}
-
 function compareQuotes(left: BridgeQuote, right: BridgeQuote) {
   const leftAmount = BigInt(left.dstAmount);
   const rightAmount = BigInt(right.dstAmount);
@@ -1360,6 +1197,7 @@ function getQuoteRouteKey(quote: BridgeQuote) {
 
 function formatRouteType(type: string) {
   const labels: Record<string, string> = {
+    DIRECT_OFT: "Direct OFT · no Stargate product fee",
     STARGATE_V2_TAXI: "Stargate Fast",
     STARGATE_V2_BUS: "Stargate Economy",
     STARGATE_V1: "Stargate V1",
@@ -1413,7 +1251,7 @@ function getQuoteFeeCopy(quote: BridgeQuote) {
 }
 
 function getFeeTotalUsd(fees?: QuoteFee[]) {
-  if (!fees?.length) {
+  if (!fees?.length || fees.some((fee) => fee.amountUsd === undefined || !Number.isFinite(Number(fee.amountUsd)))) {
     return null;
   }
 
@@ -2565,7 +2403,9 @@ function CustomOftSetupModal({
 }
 
 export function BridgeApp() {
-  const { wagmiConfig, updateBridgeEvmChains } = useRpcConfig();
+  const queryClient = useQueryClient();
+  const [useApiRoutes, setUseApiRoutes] = useState(false);
+  const { wagmiConfig, rpcConfig, updateBridgeEvmChains } = useRpcConfig();
   const [isRpcSettingsOpen, setIsRpcSettingsOpen] = useState(false);
   const { address, chainId, isConnected } = useAccount();
   const { connect, connectors, isPending: isConnectPending } = useConnect();
@@ -2589,6 +2429,7 @@ export function BridgeApp() {
   const [destinationAddress, setDestinationAddress] = useState("");
   const [amountInput, setAmountInput] = useState("");
   const [quotes, setQuotes] = useState<BridgeQuote[]>([]);
+  const [quotedRequestKey, setQuotedRequestKey] = useState("");
   const [selectedQuoteRouteKey, setSelectedQuoteRouteKey] = useState<string | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [isQuoting, setIsQuoting] = useState(false);
@@ -3302,11 +3143,11 @@ export function BridgeApp() {
   ]);
 
   const quoteRequestKey = quoteRequestState.ready
-    ? JSON.stringify(quoteRequestState.payload)
+    ? JSON.stringify([useApiRoutes, quoteRequestState.payload])
     : "";
 
   const quote = useMemo(() => {
-    if (!quotes.length) {
+    if (!quotes.length || quotedRequestKey !== quoteRequestKey) {
       return null;
     }
 
@@ -3318,7 +3159,7 @@ export function BridgeApp() {
       quotes.find((candidate) => getQuoteRouteKey(candidate) === selectedQuoteRouteKey) ??
       quotes[0]
     );
-  }, [quotes, selectedQuoteRouteKey]);
+  }, [quotes, selectedQuoteRouteKey, quotedRequestKey, quoteRequestKey]);
 
   const availableQuoteCount = quotes.length;
   const bestQuoteRouteKey = quotes[0] ? getQuoteRouteKey(quotes[0]) : null;
@@ -3559,22 +3400,25 @@ export function BridgeApp() {
       throw new Error("Expected an EVM chain.");
     }
 
-    if (chain.chainKey in walletChainByKey) {
-      return (await readContract(wagmiConfig, {
-        address,
-        abi,
-        functionName,
-        args,
-        chainId: chain.chainId as SupportedChainId,
-      })) as T;
+    if (wagmiConfig.chains.some((configured) => configured.id === chain.chainId)) {
+      try {
+        return (await readContract(wagmiConfig, {
+          address,
+          abi,
+          functionName,
+          args,
+          chainId: chain.chainId as SupportedChainId,
+        })) as T;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "";
+        if (/does not exist|not available|request failed|failed to fetch|econnrefused|timed? ?out/i.test(msg))
+          throw new Error(`Failed to read on-chain data on ${chain.shortName ?? chain.chainKey}. Check your RPC settings.`);
+        throw error;
+      }
     }
 
-    return readInjectedEvmContract<T>({
-      address,
-      abi,
-      functionName,
-      args,
-    });
+    throw new Error(`No verified RPC configured for ${chain.shortName}.`);
+
   }
 
   async function sendEvmTransactionForChain(
@@ -3591,7 +3435,13 @@ export function BridgeApp() {
       throw new Error("Expected an EVM chain.");
     }
 
-    if (chain.chainKey in walletChainByKey) {
+    if (wagmiConfig.chains.some((configured) => configured.id === chain.chainId)) {
+      const account = getAccount(wagmiConfig);
+      if (account.address?.toLowerCase() !== transaction.from.toLowerCase() || account.chainId !== chain.chainId)
+        throw new Error("Wallet account or network changed. Review the transfer again.");
+      const client = getPublicClient(wagmiConfig, { chainId: chain.chainId });
+      if (!client) throw new Error("No RPC configured for the source chain.");
+      await client.call({ account: transaction.from, to: transaction.to, data: transaction.data, value: transaction.value ?? BigInt(0) });
       return sendTransaction(wagmiConfig, {
         account: transaction.from,
         chainId: chain.chainId as SupportedChainId,
@@ -3602,7 +3452,7 @@ export function BridgeApp() {
       });
     }
 
-    return sendInjectedEvmTransaction(transaction);
+    throw new Error(`No verified RPC configured for ${chain.shortName}.`);
   }
 
   async function waitForEvmTransaction(chain: BridgeChain, hash: string) {
@@ -3610,15 +3460,19 @@ export function BridgeApp() {
       throw new Error("Expected an EVM chain.");
     }
 
-    if (chain.chainKey in walletChainByKey) {
-      await waitForTransactionReceipt(wagmiConfig, {
+    if (wagmiConfig.chains.some((configured) => configured.id === chain.chainId)) {
+      const receipt = await waitForTransactionReceipt(wagmiConfig, {
         chainId: chain.chainId as SupportedChainId,
         hash: hash as Hex,
+        onReplaced: ({ reason }) => {
+          if (reason !== "repriced") throw new Error("Transaction was cancelled or replaced. Check its hash before retrying.");
+        },
       });
-      return;
+      assertSuccessfulEvmReceipt(receipt);
+      return receipt.transactionHash;
     }
 
-    await waitForInjectedEvmTransactionReceipt(hash);
+    throw new Error(`No verified RPC configured for ${chain.shortName}.`);
   }
 
   function dismissExecutionNotification(notificationId: string) {
@@ -4352,7 +4206,51 @@ export function BridgeApp() {
     setQuoteError(null);
     setLastQuoteUpdatedAt(null);
     setExecutionState({ phase: "idle" });
-  }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, bridgeApiProvider, sourceWalletAddress]);
+    quoteRequestIdRef.current += 1;
+    isQuotingRef.current = false;
+    setIsQuoting(false);
+  }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, srcChainKey, srcTokenAddress, bridgeApiProvider, sourceWalletAddress, useApiRoutes]);
+
+  async function requestDirectQuote(simulate = false) {
+    if (!quoteRequestState.ready || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken) {
+      throw new Error("Select tokens and enter a valid amount and recipient.");
+    }
+    if ([srcChain, dstChain].some((chain) =>
+      chain.chainType !== "SOLANA" && (chain.chainType !== "EVM" || !wagmiConfig.chains.some((configured) => configured.id === chain.chainId)),
+    )) {
+      throw new Error("Direct OFT supports configured EVM networks and Solana. Other API routes are available separately and may charge product fees.");
+    }
+    const params = new URLSearchParams({
+      contractAddresses: selectedSrcToken.address,
+      chainNames: `${srcChain.chainKey},${dstChain.chainKey}`,
+    });
+    const metadata = await queryClient.fetchQuery({
+      queryKey: ["bridge", "direct-oft-metadata", params.toString()],
+      queryFn: () => fetchJson<LayerZeroOftListResponse>(`/api/bridge/oft-list?${params}`),
+      staleTime: 60_000,
+    });
+    return buildDirectOftQuote({
+      metadata, srcChain, dstChain, srcToken: selectedSrcToken, dstToken: selectedDstToken,
+      amount: BigInt(quoteRequestState.payload.amount),
+      from: sourceWalletAddress, to: destinationAddress,
+      solanaRpcUrl: rpcConfig.solana?.[0], simulate,
+      discoverPeers: true,
+      fetchDiscoveryQuote: () => fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
+        method: "POST",
+        body: JSON.stringify({ ...quoteRequestState.payload, provider: "stargate" }),
+      }),
+      read: async <T,>({ chain, ...params }: Parameters<typeof readEvmContractForChain>[0]) => {
+        try {
+          return await readContract(wagmiConfig, { ...params, chainId: chain.chainId }) as T;
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : "";
+          if (/does not exist|not available|request failed|failed to fetch|econnrefused|timed? ?out/i.test(msg))
+            throw new Error(`Failed to read on-chain data on ${chain.shortName ?? chain.chainKey}. Check your RPC settings.`);
+          throw error;
+        }
+      },
+    });
+  }
 
   async function handleRequestQuote(mode: "auto" | "manual" | "refresh" = "manual") {
     if (isCustomOftSource) {
@@ -4378,7 +4276,9 @@ export function BridgeApp() {
     setQuoteError(null);
 
     try {
-      const quoteResponse = await fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
+      const quoteResponse = !useApiRoutes
+        ? { quotes: [await requestDirectQuote()] } as BridgeQuoteResponse
+        : await fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
         method: "POST",
         headers: getBridgeApiRequestHeaders(bridgeApiProvider, layerZeroApiKey),
         body: JSON.stringify(quoteRequestState.payload),
@@ -4397,6 +4297,7 @@ export function BridgeApp() {
       }
 
       setQuotes(nextQuotes);
+      setQuotedRequestKey(quoteRequestKey);
       setSelectedQuoteRouteKey((current) => {
         if (current && nextQuotes.some((candidate) => getQuoteRouteKey(candidate) === current)) {
           return current;
@@ -4410,6 +4311,7 @@ export function BridgeApp() {
         return;
       }
 
+      setQuotes([]);
       setQuoteError(getErrorMessage(error));
     } finally {
       if (requestId === quoteRequestIdRef.current) {
@@ -4482,11 +4384,23 @@ export function BridgeApp() {
     quoteRequestState.ready,
   ]);
 
+  const executionLockRef = useRef(false);
+  const executionContext = JSON.stringify([srcChainKey, dstChainKey, srcTokenAddress, dstTokenAddress,
+    amountInput, destinationAddress, sourceWalletAddress, useApiRoutes, selectedCustomOftConfigId]);
+  const executionContextRef = useRef(executionContext);
+  useEffect(() => { executionContextRef.current = executionContext; }, [executionContext]);
+  function assertCurrentExecutionContext() {
+    if (executionContextRef.current !== executionContext)
+      throw new Error("Transfer details or wallet changed during execution. Review before retrying.");
+  }
+
   async function handleExecuteQuote() {
-    if (!quote || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken) {
+    if (!quote || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken || !quoteRequestState.ready || quotedRequestKey !== quoteRequestKey) {
       return;
     }
 
+    if (executionLockRef.current) return;
+    executionLockRef.current = true;
     const historyId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const initialHistoryItem: ExecutionHistoryItem = {
       id: historyId,
@@ -4526,7 +4440,19 @@ export function BridgeApp() {
 
     try {
       let lastTxHash: string | undefined;
-      let resolvedUserSteps = quote.userSteps;
+      const isDirectOft = quote.routeSteps.some((step) => step.type === "DIRECT_OFT");
+      const refreshDirectQuote = async () => {
+        assertCurrentExecutionContext();
+        const fresh = await requestDirectQuote(true);
+        if (!fresh.directOft || !quote.directOft ||
+            BigInt(fresh.dstAmount) < BigInt(quote.dstAmountMin ?? quote.dstAmount) ||
+            BigInt(fresh.directOft.nativeFee) > BigInt(quote.directOft.nativeFee) ||
+            fresh.directOft.meshKey !== quote.directOft.meshKey) {
+          throw new Error("Direct OFT quote changed. Refresh and review the new quote before sending.");
+        }
+        return fresh;
+      };
+      let resolvedUserSteps = isDirectOft ? (await refreshDirectQuote()).userSteps : quote.userSteps;
       let latestTransferStatus = "";
 
       if (!resolvedUserSteps.length) {
@@ -4546,6 +4472,8 @@ export function BridgeApp() {
         }
       }
 
+      assertExecutionPlan(resolvedUserSteps, srcChain, sourceWalletAddress ?? "");
+
       if (sourceChainType === "EVM") {
         if (!address) {
           throw new Error("Connect an EVM wallet before executing this route.");
@@ -4564,8 +4492,12 @@ export function BridgeApp() {
         }
 
         for (const [index, step] of resolvedUserSteps.entries()) {
+          assertCurrentExecutionContext();
           if (isTransactionStep(step) && step.chainType === "EVM") {
-            const payload = step.transaction?.encoded;
+            const freshSend = isDirectOft && index === resolvedUserSteps.length - 1
+              ? (await refreshDirectQuote()).userSteps.at(-1) as TransactionUserStep
+              : null;
+            const payload = freshSend?.transaction.encoded ?? step.transaction?.encoded;
 
             if (!payload?.to) {
               throw new Error(`Step ${index + 1} is missing transaction payload.`);
@@ -4598,9 +4530,11 @@ export function BridgeApp() {
               message: shortenAddress(hash),
             });
 
-            await waitForEvmTransaction(srcChain, hash);
-
+            const confirmedHash = await waitForEvmTransaction(srcChain, hash);
+            lastTxHash = confirmedHash;
+            setExecutionState((current) => ({ ...current, txHash: confirmedHash }));
             updateExecutionHistoryItem(historyId, {
+              txHash: confirmedHash,
               currentStep: "Transaction confirmed",
             });
             pushExecutionNotification({
@@ -4622,6 +4556,9 @@ export function BridgeApp() {
               currentStep: step.description ?? `Signing step ${index + 1}`,
             });
 
+            const signingAccount = getAccount(wagmiConfig);
+            if (signingAccount.address?.toLowerCase() !== address.toLowerCase() || signingAccount.chainId !== srcChain.chainId)
+              throw new Error("Wallet account or network changed before signing.");
             const signature = await (signTypedData as (...args: unknown[]) => Promise<Hex>)(
               wagmiConfig,
               {
@@ -4674,9 +4611,11 @@ export function BridgeApp() {
         updateExecutionHistoryItem(historyId, {
           currentStep: `Submitting ${getChainTypeDisplayLabel(sourceChainType)} transaction`,
         });
+        assertCurrentExecutionContext();
         const submittedTxHash = await bridgeWallets.executeUserSteps(
           sourceChainType,
           resolvedUserSteps,
+          sourceWalletAddress ?? "",
         );
 
         if (submittedTxHash) {
@@ -4687,11 +4626,11 @@ export function BridgeApp() {
           }));
           updateExecutionHistoryItem(historyId, {
             txHash: submittedTxHash,
-            currentStep: "Transaction confirmed",
+            currentStep: sourceChainType === "SOLANA" ? "Transaction confirmed" : "Transaction submitted",
           });
           pushExecutionNotification({
             tone: "neutral",
-            title: "Transaction confirmed",
+            title: sourceChainType === "SOLANA" ? "Transaction confirmed" : "Transaction submitted",
             message: shortenAddress(submittedTxHash),
           });
         } else {
@@ -4706,6 +4645,18 @@ export function BridgeApp() {
         }
       } else {
         throw new Error("Missing source chain type.");
+      }
+
+      if (isDirectOft) {
+        const explorerUrl = getLayerZeroScanUrl(lastTxHash);
+        setExecutionState({ phase: "success", activeHistoryId: historyId, txHash: lastTxHash, transferStatus: "SOURCE_CONFIRMED", explorerUrl });
+        updateExecutionHistoryItem(historyId, {
+          phase: "success", txHash: lastTxHash, transferStatus: "SOURCE_CONFIRMED", explorerUrl,
+          currentStep: "Source transaction confirmed. Track destination settlement on LayerZeroScan.",
+        });
+        pushExecutionNotification({ tone: "success", title: "Direct OFT submitted", message: "Track destination settlement on LayerZeroScan." });
+        void erc20BalanceQuery.refetch();
+        return;
       }
 
       updateExecutionHistoryItem(historyId, {
@@ -4793,16 +4744,19 @@ export function BridgeApp() {
       }
     } catch (error) {
       const errorMessage = getErrorMessage(error);
+      const submittedHash = error && typeof error === "object" && "transactionHash" in error && typeof error.transactionHash === "string" ? error.transactionHash : undefined;
 
       setExecutionState((current) => ({
         ...current,
         phase: "error",
         activeHistoryId: historyId,
         error: errorMessage,
+        txHash: submittedHash ?? current.txHash,
       }));
       updateExecutionHistoryItem(historyId, {
         phase: "error",
         error: errorMessage,
+        ...(submittedHash ? { txHash: submittedHash } : {}),
         currentStep: undefined,
       });
       pushExecutionNotification({
@@ -4811,6 +4765,8 @@ export function BridgeApp() {
         message: errorMessage,
         persistent: true,
       });
+    } finally {
+      executionLockRef.current = false;
     }
   }
 
@@ -4949,6 +4905,8 @@ export function BridgeApp() {
       return;
     }
 
+    if (executionLockRef.current) return;
+    executionLockRef.current = true;
     const historyId = createStableId();
     const initialAmountLabel = `${formatTokenAmount(
       customOftRequestState.payload.amount,
@@ -4999,18 +4957,20 @@ export function BridgeApp() {
         await switchEvmChain(customOftSrcChain);
       }
 
-      const { quotedAmountReceivedLD, userSteps } = await buildLocalCustomOftTransfer({
+      const buildCustomQuote = () => buildCustomOftQuote({
         config: selectedCustomOftConfig,
         srcChain: customOftSrcChain,
         dstChain: customOftDstChain,
-        sourceDeployment: selectedCustomOftSourceDeployment,
         amount: BigInt(customOftRequestState.payload.amount),
         from: customOftRequestState.payload.from,
         to: customOftRequestState.payload.to,
-        readContractForChain: readEvmContractForChain,
+        read: readEvmContractForChain,
       });
+      const customQuote = await buildCustomQuote();
+      const { userSteps } = customQuote;
+      assertExecutionPlan(userSteps, customOftSrcChain, address);
       const quotedDestinationAmountLabel = `${formatTokenAmount(
-        quotedAmountReceivedLD.toString(),
+        customQuote.dstAmount,
         selectedCustomOftDestinationDeployment.decimals,
       )} ${customOftDestinationTokenSymbol}`;
 
@@ -5023,11 +4983,17 @@ export function BridgeApp() {
       let lastTxHash: string | undefined;
 
       for (const [index, step] of userSteps.entries()) {
+        assertCurrentExecutionContext();
         if (!isTransactionStep(step)) {
           throw new Error(`Unsupported custom OFT step ${index + 1}.`);
         }
 
-        const payload = step.transaction?.encoded;
+        const fresh = index === userSteps.length - 1 ? await buildCustomQuote() : null;
+        if (fresh && (fresh.directOft?.meshKey !== customQuote.directOft?.meshKey ||
+          BigInt(fresh.dstAmount) < BigInt(customQuote.dstAmountMin ?? customQuote.dstAmount) ||
+          BigInt(fresh.directOft!.nativeFee) > BigInt(customQuote.directOft!.nativeFee)))
+          throw new Error("Custom OFT quote changed. Review the transfer again.");
+        const payload = fresh ? (fresh.userSteps.at(-1) as TransactionUserStep).transaction.encoded : step.transaction?.encoded;
 
         if (!payload?.to) {
           throw new Error(`Custom OFT step ${index + 1} is missing transaction payload.`);
@@ -5055,7 +5021,9 @@ export function BridgeApp() {
           currentStep: "Transaction submitted",
         });
 
-        await waitForEvmTransaction(customOftSrcChain, hash);
+        lastTxHash = await waitForEvmTransaction(customOftSrcChain, hash);
+        setExecutionState((current) => ({ ...current, txHash: lastTxHash }));
+        updateExecutionHistoryItem(historyId, { txHash: lastTxHash });
       }
 
       const explorerUrl = getLayerZeroScanUrl(lastTxHash);
@@ -5105,6 +5073,8 @@ export function BridgeApp() {
         message: errorMessage,
         persistent: true,
       });
+    } finally {
+      executionLockRef.current = false;
     }
   }
 
@@ -5126,6 +5096,8 @@ export function BridgeApp() {
       : null;
   const canExecuteQuote =
     Boolean(quote) &&
+    !isQuoting &&
+    !quoteError &&
     executionState.phase !== "running" &&
     sourceWalletConnected &&
     canExecuteSelectedSourceChain;
@@ -5492,7 +5464,7 @@ export function BridgeApp() {
                   </div>
                 ) : null}
 
-                <div className="mt-3 flex flex-wrap items-start justify-between gap-2.5 rounded-[1.15rem] border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                <div className="mt-3 grid gap-3 rounded-[1.15rem] border border-white/10 bg-white/[0.03] px-3 py-2.5">
                   <div className="min-w-0 flex-1">
                     <div className="grid gap-2.5 lg:grid-cols-[minmax(0,1.45fr)_minmax(12rem,0.8fr)]">
                       <label className="block space-y-1.5">
@@ -5552,7 +5524,16 @@ export function BridgeApp() {
                     </div>
                   </div>
 
-                  <div className="flex flex-nowrap items-center gap-2 self-start lg:justify-end">
+                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+                  {!isCustomOftSource ? (
+                    <label className="flex min-w-0 basis-48 flex-1 items-start gap-2 text-xs leading-5 text-[var(--muted)]">
+                      <input className="mt-1 shrink-0" type="checkbox" checked={useApiRoutes}
+                        disabled={executionState.phase === "running"}
+                        onChange={(event) => setUseApiRoutes(event.target.checked)} />
+                      <span>Use API routes <span className="text-[var(--muted-strong)]">(may include Stargate product fees)</span></span>
+                    </label>
+                  ) : null}
+                  <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
                     {isCustomOftSource ? (
                       <button
                         type="button"
@@ -5586,6 +5567,7 @@ export function BridgeApp() {
                       <SendIcon className="h-3.5 w-3.5" />
                       <span>{executionState.phase === "running" ? "Executing..." : "Execute"}</span>
                     </button>
+                  </div>
                   </div>
                 </div>
           </section>

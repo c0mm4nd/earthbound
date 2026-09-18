@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getAppOrigin } from "@/lib/app-origin";
 
 export function GET(request: NextRequest) {
-  const origin = request.nextUrl.origin;
+  const origin = getAppOrigin(request.headers);
 
   return NextResponse.json({
     name: "Earthbound",

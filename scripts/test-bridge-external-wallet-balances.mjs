@@ -68,6 +68,7 @@ const sandbox = {
 
     if (specifier === "@/lib/rpc-config") {
       return {
+        getEffectiveRpcUrls: (key, config) => config[key] ?? [`https://${key}.drpc.org`],
         loadRpcConfig: () => ({
           solana: ["https://custom-solana.example"],
           sui: ["https://custom-sui.example"],

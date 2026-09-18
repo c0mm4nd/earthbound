@@ -1,12 +1,12 @@
 "use client";
 
-import { IotaClient, getFullnodeUrl } from "@iota/iota-sdk/client";
+import { IotaClient } from "@iota/iota-sdk/client";
 import { IOTA_TYPE_ARG } from "@iota/iota-sdk/utils";
-import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
+import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { SUI_TYPE_ARG } from "@mysten/sui/utils";
-import { Connection, PublicKey, VersionedTransaction, clusterApiUrl } from "@solana/web3.js";
+import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import type { BridgeChainType, QuoteUserStep, TransactionPayload } from "@/lib/bridge-types";
-import { loadRpcConfig } from "@/lib/rpc-config";
+import { loadRpcConfig, getEffectiveRpcUrls } from "@/lib/rpc-config";
 
 type WalletConnectResult = {
   address: string;
@@ -241,7 +241,6 @@ function getTransactionHash(value: unknown) {
     "txID",
     "digest",
     "signature",
-    "boc",
   ];
 
   for (const key of directKeys) {
@@ -306,17 +305,17 @@ function getSolanaWalletProvider() {
 
 function getSolanaConnection() {
   const solanaRpcUrl =
-    loadRpcConfig()["solana"]?.[0] ?? clusterApiUrl("mainnet-beta");
+    getEffectiveRpcUrls("solana", loadRpcConfig())[0];
   return new Connection(solanaRpcUrl, "confirmed");
 }
 
 function getSuiClient() {
-  const suiRpcUrl = loadRpcConfig()["sui"]?.[0] ?? getJsonRpcFullnodeUrl("mainnet");
+  const suiRpcUrl = getEffectiveRpcUrls("sui", loadRpcConfig())[0];
   return new SuiJsonRpcClient({ network: "mainnet", url: suiRpcUrl });
 }
 
 function getIotaClient() {
-  const iotaRpcUrl = loadRpcConfig()["iota"]?.[0] ?? getFullnodeUrl("mainnet");
+  const iotaRpcUrl = getEffectiveRpcUrls("iota", loadRpcConfig())[0];
   return new IotaClient({ url: iotaRpcUrl });
 }
 
@@ -487,9 +486,8 @@ function getStarknetTransactionInput(encoded: TransactionPayload) {
       .map((call) => (isRecord(call) ? toStarknetWalletCall(call) : null))
       .filter(isDefined);
 
-    if (calls.length) {
-      return calls;
-    }
+    if (calls.length !== directCallsValue.length) return null;
+    if (calls.length) return calls;
   }
 
   const directCallValue =
@@ -534,7 +532,7 @@ function toTonMessage(value: Record<string, unknown>) {
       )
     : undefined;
 
-  if (!address || !amount) {
+  if (!address || !amount || !/^[0-9]+$/.test(amount)) {
     return null;
   }
 
@@ -548,6 +546,8 @@ function toTonMessage(value: Record<string, unknown>) {
 }
 
 function getTonTransactionInput(encoded: TransactionPayload) {
+  if (encoded.validUntil !== undefined && (!Number.isSafeInteger(encoded.validUntil) || Number(encoded.validUntil) <= Math.floor(Date.now() / 1_000))) return null;
+  if (encoded.network !== undefined && String(encoded.network) !== "-239") return null;
   const directMessagesValue = Array.isArray(encoded.messages) ? encoded.messages : null;
 
   if (directMessagesValue) {
@@ -555,6 +555,7 @@ function getTonTransactionInput(encoded: TransactionPayload) {
       .map((message) => (isRecord(message) ? toTonMessage(message) : null))
       .filter(isDefined);
 
+    if (messages.length !== directMessagesValue.length) return null;
     if (messages.length) {
       return {
         validUntil:
@@ -616,15 +617,9 @@ async function signAndSubmitAptosPayload(
     throw new Error("The connected Aptos wallet cannot submit transactions.");
   }
 
-  try {
-    return await provider.signAndSubmitTransaction(payload);
-  } catch (error) {
-    if ("payload" in payload) {
-      throw error;
-    }
-
-    return provider.signAndSubmitTransaction({ payload });
-  }
+  // A submission can succeed even if its response is lost. Never retry a signing
+  // operation automatically with a different payload shape.
+  return provider.signAndSubmitTransaction(payload);
 }
 
 export async function connectExternalWallet(
@@ -791,7 +786,44 @@ export async function fetchExternalWalletBalance({
   }
 }
 
-export async function executeSolanaUserSteps(userSteps: QuoteUserStep[]) {
+function assertExternalPlan(userSteps: QuoteUserStep[], chainType: string) {
+  if (!userSteps.length) throw new Error(`No executable ${chainType} user steps were found.`);
+  if (chainType !== "SOLANA" && userSteps.length > 1)
+    throw new Error(`Multi-step ${chainType} execution requires confirmed sequencing and is not supported.`);
+  for (const step of userSteps) {
+    if (step.type !== "TRANSACTION" || step.chainType !== chainType)
+      throw new Error(`Unsupported ${chainType} execution step. No transactions were submitted.`);
+    const encoded = getEncodedTransactionPayload(step);
+    let valid = false;
+    if (encoded) {
+      switch (chainType) {
+        case "SOLANA": {
+          const data = encoded.serializedTransaction ?? encoded.data;
+          valid = encoded.encoding === "base64" && typeof data === "string";
+          if (valid) VersionedTransaction.deserialize(base64ToBytes(data as string));
+          break;
+        }
+        case "APTOS": valid = Boolean(getAptosTransactionInput(encoded)); break;
+        case "TRON": valid = Boolean(getTronTransactionInput(encoded)); break;
+        case "STARKNET": valid = Boolean(getStarknetTransactionInput(encoded)?.length); break;
+        case "SUI": case "IOTAMOVE": valid = Boolean(getSerializedMoveTransaction(encoded)); break;
+        case "TON": valid = Boolean(getTonTransactionInput(encoded)); break;
+      }
+    }
+    if (!valid) throw new Error(`Unsupported ${chainType === "SOLANA" ? "Solana" : chainType === "APTOS" ? "Aptos" : chainType === "TRON" ? "Tron" : chainType === "STARKNET" ? "Starknet" : chainType} transaction payload.`);
+  }
+}
+
+function assertWalletAccount(actual: string | undefined, expected: string, hex = false) {
+  const normalize = (value: string) => hex && /^0x[0-9a-f]+$/i.test(value)
+    ? BigInt(value).toString(16) : value;
+  if (!actual || !expected || normalize(actual) !== normalize(expected)) {
+    throw new Error("Source wallet changed or cannot be verified. Reconnect and refresh the quote.");
+  }
+}
+
+export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expectedAccount: string) {
+  assertExternalPlan(userSteps, "SOLANA");
   const provider = getSolanaWalletProvider();
 
   if (!provider) {
@@ -810,14 +842,38 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[]) {
     const encoded = getEncodedTransactionPayload(step) as {
       encoding?: string;
       data?: string;
+      serializedTransaction?: string;
+      blockhash?: string;
+      lastValidBlockHeight?: number;
     } | null;
+    const transactionData = encoded?.serializedTransaction ?? encoded?.data;
 
-    if (encoded?.encoding !== "base64" || typeof encoded.data !== "string") {
+    if (encoded?.encoding !== "base64" || typeof transactionData !== "string") {
       throw new Error("Unsupported Solana transaction payload.");
     }
 
-    const versionedTransaction = VersionedTransaction.deserialize(base64ToBytes(encoded.data));
+    const versionedTransaction = VersionedTransaction.deserialize(base64ToBytes(transactionData));
+    if (provider.publicKey?.toBase58() !== versionedTransaction.message.staticAccountKeys[0].toBase58())
+      throw new Error("Solana wallet changed. Refresh the quote for the connected wallet.");
+    const hasBlockhashContext = encoded.blockhash !== undefined || encoded.lastValidBlockHeight !== undefined;
+    if (hasBlockhashContext) {
+      if (encoded.blockhash !== versionedTransaction.message.recentBlockhash ||
+          !Number.isSafeInteger(encoded.lastValidBlockHeight) || encoded.lastValidBlockHeight! <= 0) {
+        throw new Error("Invalid Solana transaction validity context. Refresh the quote.");
+      }
+      if (provider.publicKey?.toBase58() !== versionedTransaction.message.staticAccountKeys[0].toBase58()) {
+        throw new Error("Solana wallet changed. Refresh the quote for the connected wallet.");
+      }
+      if (!(await connection.isBlockhashValid(encoded.blockhash, { commitment: "confirmed" })).value) {
+        throw new Error("Solana transaction expired. Refresh the quote.");
+      }
+    }
 
+    const simulation = await connection.simulateTransaction(versionedTransaction, { sigVerify: false, commitment: "confirmed" });
+    if (simulation.value.err) throw new Error(`Solana simulation failed: ${JSON.stringify(simulation.value.err)}`);
+    assertWalletAccount(provider.publicKey?.toBase58(), expectedAccount);
+    if (provider.publicKey?.toBase58() !== versionedTransaction.message.staticAccountKeys[0].toBase58())
+      throw new Error("Solana wallet changed. Refresh the quote.");
     if (provider.signAndSendTransaction) {
       const result = await provider.signAndSendTransaction(versionedTransaction);
 
@@ -834,16 +890,20 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[]) {
       throw new Error("The connected Solana wallet cannot sign transactions.");
     }
 
-    const latestBlockhash = await connection.getLatestBlockhash();
-
-    await connection.confirmTransaction(
-      {
-        signature: lastSignature,
-        blockhash: latestBlockhash.blockhash,
-        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-      },
-      "confirmed",
-    );
+    try {
+      const confirmation = hasBlockhashContext
+        ? await connection.confirmTransaction({
+            signature: lastSignature,
+            blockhash: encoded.blockhash!,
+            lastValidBlockHeight: encoded.lastValidBlockHeight!,
+          }, "confirmed")
+        : await connection.confirmTransaction(lastSignature, "confirmed");
+      if (confirmation.value.err) {
+        throw new Error(`Solana transaction failed: ${JSON.stringify(confirmation.value.err)}`);
+      }
+    } catch (error) {
+      throw Object.assign(new Error(`${error instanceof Error ? error.message : String(error)} Solana transaction ${lastSignature} was submitted; check its status before retrying.`), { transactionHash: lastSignature });
+    }
 
     executedSteps += 1;
   }
@@ -855,7 +915,8 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[]) {
   return lastSignature;
 }
 
-export async function executeAptosUserSteps(userSteps: QuoteUserStep[]) {
+export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expectedAccount: string) {
+  assertExternalPlan(userSteps, "APTOS");
   const provider = window.aptos;
 
   if (!provider) {
@@ -882,6 +943,7 @@ export async function executeAptosUserSteps(userSteps: QuoteUserStep[]) {
       throw new Error("Unsupported Aptos transaction payload.");
     }
 
+    assertWalletAccount((await provider.account?.())?.address, expectedAccount, true);
     const submissionResult =
       aptosTransactionInput.kind === "payload"
         ? await signAndSubmitAptosPayload(provider, aptosTransactionInput.value)
@@ -906,7 +968,8 @@ export async function executeAptosUserSteps(userSteps: QuoteUserStep[]) {
   return lastHash;
 }
 
-export async function executeTronUserSteps(userSteps: QuoteUserStep[]) {
+export async function executeTronUserSteps(userSteps: QuoteUserStep[], expectedAccount: string) {
+  assertExternalPlan(userSteps, "TRON");
   const tronWeb = getTronWebProvider();
 
   if (!tronWeb?.trx) {
@@ -933,6 +996,7 @@ export async function executeTronUserSteps(userSteps: QuoteUserStep[]) {
       throw new Error("Unsupported Tron transaction payload.");
     }
 
+    assertWalletAccount(tronWeb.defaultAddress?.base58, expectedAccount);
     if (tronTransactionInput.kind === "object") {
       if (!tronWeb.trx.sign || !tronWeb.trx.sendRawTransaction) {
         throw new Error("The connected Tron wallet cannot sign transactions.");
@@ -974,7 +1038,8 @@ export async function executeTronUserSteps(userSteps: QuoteUserStep[]) {
   return lastHash;
 }
 
-export async function executeStarknetUserSteps(userSteps: QuoteUserStep[]) {
+export async function executeStarknetUserSteps(userSteps: QuoteUserStep[], expectedAccount: string) {
+  assertExternalPlan(userSteps, "STARKNET");
   const provider = window.starknet;
 
   if (!provider) {
@@ -1001,6 +1066,8 @@ export async function executeStarknetUserSteps(userSteps: QuoteUserStep[]) {
       throw new Error("Unsupported Starknet transaction payload.");
     }
 
+    assertWalletAccount(provider.selectedAddress ?? provider.account?.address, expectedAccount, true);
+    if (provider.account?.execute) assertWalletAccount(provider.account.address, expectedAccount, true);
     const accountCalls = calls.map(toStarknetAccountCall);
     const executionResult =
       provider.account?.execute
@@ -1031,6 +1098,7 @@ async function executeSerializedMoveUserSteps(
   chain: `${string}:${string}`,
   executeTransaction: SerializedMoveTransactionExecutor,
 ) {
+  assertExternalPlan(userSteps, chainType);
   let lastHash: string | undefined;
   let executedSteps = 0;
 
@@ -1056,6 +1124,8 @@ async function executeSerializedMoveUserSteps(
       chain,
     });
 
+    const effects = (result as { effects?: { status?: { status?: string; error?: string } } } | null)?.effects;
+    if (effects?.status?.status === "failure") throw new Error(effects.status.error ?? `${chainType} transaction failed.`);
     lastHash = getTransactionHash(result) ?? lastHash;
     executedSteps += 1;
   }
@@ -1095,6 +1165,7 @@ export async function executeTonUserSteps(
   userSteps: QuoteUserStep[],
   executeTransaction: TonTransactionExecutor,
 ) {
+  assertExternalPlan(userSteps, "TON");
   let lastHash: string | undefined;
   let executedSteps = 0;
 

@@ -112,6 +112,7 @@ export type QuoteUserStep =
   | UnsupportedUserStep;
 
 export interface BridgeQuote {
+  directOft?: { meshKey: string; nativeFee: string };
   id: string;
   feeUsd?: string;
   feePercent?: string;
@@ -168,6 +169,7 @@ export interface LayerZeroOftTransferResponse {
 }
 
 export interface LayerZeroOftListDeployment {
+  details?: { oftProgramId?: string; mintAuthority?: string };
   address: string;
   localDecimals?: number;
   sharedDecimals?: number;

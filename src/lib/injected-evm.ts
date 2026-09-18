@@ -7,6 +7,7 @@ import {
   type Address,
   type Hex,
 } from "viem";
+import { assertSuccessfulEvmReceipt } from "./execution-safety";
 
 type InjectedEvmRequestArguments = {
   method: string;
@@ -165,6 +166,7 @@ export async function waitForInjectedEvmTransactionReceipt(
     });
 
     if (receipt) {
+      assertSuccessfulEvmReceipt(receipt as { status?: unknown });
       return receipt;
     }
 

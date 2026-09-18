@@ -1,0 +1,295 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { Script } from "node:vm";
+import ts from "typescript";
+import { PublicKey } from "@solana/web3.js";
+
+import { createPublicClient, http, toHex, decodeFunctionData } from "viem";
+
+const require = createRequire(import.meta.url);
+function load(name, overrides = {}) {
+  const { outputText } = ts.transpileModule(
+    readFileSync(new URL(`../src/lib/${name}.ts`, import.meta.url), "utf8"),
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  );
+  const commonJsModule = { exports: {} };
+  new Script(outputText).runInNewContext({
+    module: commonJsModule,
+    exports: commonJsModule.exports,
+    btoa,
+    atob,
+    require: (id) =>
+      overrides[id] ??
+      (id.startsWith("./") ? load(id.slice(2), overrides) : require(id)),
+  });
+  return commonJsModule.exports;
+}
+const { buildLayerZeroExecutorLzReceiveOption, layerZeroOftV2Abi } =
+  load("custom-oft");
+const { receiveOptionValue, solanaRentExtraOptions } =
+  load("direct-oft-solana");
+const options = buildLayerZeroExecutorLzReceiveOption(80000n, 1000000n);
+assert.equal(receiveOptionValue(options), 1000000n);
+assert.equal(
+  receiveOptionValue(solanaRentExtraOptions(2039280n, options)),
+  1039280n,
+);
+assert.equal(solanaRentExtraOptions(100n, options), "0x");
+assert.throws(() => receiveOptionValue("0x000301002101"), /Truncated/);
+const solMint = new PublicKey(new Uint8Array(32).fill(7)).toBase58();
+const solStore = new PublicKey(new Uint8Array(32).fill(8));
+const solWallet = new PublicKey(new Uint8Array(32).fill(9)).toBase58();
+const evmToken = "0x0000000000000000000000000000000000000001";
+const evmOft = "0x0000000000000000000000000000000000000002";
+const evmWallet = "0x0000000000000000000000000000000000000003";
+const evmBytes = `0x${evmOft.slice(2).padStart(64, "0")}`;
+const nativeCurrency = { symbol: "ETH", decimals: 18 };
+const evmChain = { chainKey: "ethereum", chainType: "EVM", nativeCurrency };
+const solChain = {
+  chainKey: "solana",
+  chainType: "SOLANA",
+  nativeCurrency: { symbol: "SOL", decimals: 9 },
+};
+const eToken = { address: evmToken, decimals: 18, symbol: "TEST" };
+const sToken = { address: solMint, decimals: 9, symbol: "TEST" };
+const metadata = {
+  TEST: [
+    {
+      endpointVersion: "v2",
+      deployments: {
+        ethereum: { address: evmOft, innerTokenAddress: evmToken },
+        solana: { address: solMint },
+      },
+    },
+  ],
+};
+let destinationChecked = false;
+let solSend;
+const solAdapter = {
+  addressBytes32: toHex(solStore.toBytes()),
+  tokenAddress: solMint,
+  decimals: 9,
+  sharedDecimals: 6,
+  peer: evmBytes,
+  enforcedOptions: buildLayerZeroExecutorLzReceiveOption(65000n),
+  receiveOptions: async (recipient) => {
+    assert.equal(recipient, solWallet);
+    destinationChecked = true;
+    return options;
+  },
+  quoteOft: async (p) => ({
+    minAmountLD: 1n,
+    maxAmountLD: 100000000000n,
+    amountSentLD: p.amountLD,
+    amountReceivedLD: p.amountLD,
+  }),
+  quoteSend: async () => ({ nativeFee: 777n, lzTokenFee: 0n }),
+  buildSteps: async (p) => {
+    solSend = p;
+    return [
+      {
+        type: "TRANSACTION",
+        chainType: "SOLANA",
+        chainKey: "solana",
+        transaction: {
+          encoded: { encoding: "base64", serializedTransaction: "fixture" },
+        },
+      },
+    ];
+  },
+};
+const { buildDirectOftQuote, directOftAddressMatches, directOftRecipient } =
+  load("direct-oft", {
+    "./direct-oft-solana": {
+      createSolanaOftAdapter: async ({ storeAddress }) => {
+        assert.equal(storeAddress, solStore.toBase58());
+        return solAdapter;
+      },
+    },
+  });
+assert.equal(
+  directOftAddressMatches("SOLANA", solMint, solMint.toLowerCase()),
+  false,
+);
+assert.equal(directOftAddressMatches("EVM", "0xABC", "0xabc"), true);
+assert.equal(
+  directOftRecipient("SOLANA", solWallet),
+  toHex(new PublicKey(solWallet).toBytes()),
+);
+const read = async ({ functionName, args }) => {
+  switch (functionName) {
+    case "peers":
+      return toHex(solStore.toBytes());
+    case "token":
+      return evmToken;
+    case "sharedDecimals":
+      return 6;
+    case "approvalRequired":
+      return false;
+    case "enforcedOptions":
+      return options;
+    case "decimals":
+      return 18;
+    case "quoteOFT":
+      return [
+        { minAmountLD: 1n, maxAmountLD: 10n ** 20n },
+        [],
+        { amountSentLD: args[0].amountLD, amountReceivedLD: args[0].amountLD },
+      ];
+    case "quoteSend":
+      return { nativeFee: 123n, lzTokenFee: 0n };
+    default:
+      throw new Error(functionName);
+  }
+};
+const forward = await buildDirectOftQuote({
+  metadata,
+  srcChain: evmChain,
+  dstChain: solChain,
+  srcToken: eToken,
+  dstToken: sToken,
+  from: evmWallet,
+  to: solWallet,
+  amount: 10n ** 18n,
+  read,
+});
+assert.equal(destinationChecked, true);
+assert.equal(forward.dstAmount, "1000000000");
+const calldata = decodeFunctionData({
+  abi: layerZeroOftV2Abi,
+  data: forward.userSteps[0].transaction.encoded.data,
+});
+assert.equal(calldata.args[0].to, toHex(new PublicKey(solWallet).toBytes()));
+assert.equal(calldata.args[0].extraOptions, options);
+const reverse = await buildDirectOftQuote({
+  metadata,
+  srcChain: solChain,
+  dstChain: evmChain,
+  srcToken: sToken,
+  dstToken: eToken,
+  from: solWallet,
+  to: evmWallet,
+  amount: 10n ** 9n,
+  read,
+});
+assert.equal(reverse.dstAmount, "1000000000000000000");
+assert.equal(reverse.directOft.nativeFee, "777");
+assert.equal(reverse.fees[0].symbol, "SOL");
+assert.equal(solSend.to, `0x${evmWallet.slice(2).padStart(64, "0")}`);
+assert.equal(reverse.userSteps[0].chainType, "SOLANA");
+solAdapter.peer = `0x${"00".repeat(32)}`;
+await assert.rejects(
+  buildDirectOftQuote({
+    metadata,
+    srcChain: evmChain,
+    dstChain: solChain,
+    srcToken: eToken,
+    dstToken: sToken,
+    from: evmWallet,
+    to: solWallet,
+    amount: 1n,
+    read,
+  }),
+  /peers/,
+);
+console.log(
+  "Solana direct OFT: case-sensitive matching, recipients, rent, bidirectional decimals, fees, and peer validation passed.",
+);
+
+if (process.env.LIVE_SOLANA_OFT === "1") {
+  const m = await (
+    await fetch(
+      "https://metadata.layerzero-api.com/v1/metadata/experiment/ofts/list?symbols=APE&chainNames=ethereum,solana",
+    )
+  ).json();
+  const variant = m.APE.find(
+    (v) =>
+      v.endpointVersion === "v2" &&
+      v.deployments.ethereum &&
+      v.deployments.solana,
+  );
+  const client = createPublicClient({
+    transport: http("https://eth.drpc.org", {
+      timeout: 15000,
+      retryCount: 0,
+    }),
+  });
+  const live = await load("direct-oft").buildDirectOftQuote({
+    metadata: { APE: [variant] },
+    srcChain: evmChain,
+    dstChain: solChain,
+    srcToken: {
+      ...eToken,
+      address:
+        variant.deployments.ethereum.innerTokenAddress ??
+        variant.deployments.ethereum.address,
+      symbol: "APE",
+    },
+    dstToken: {
+      ...sToken,
+      address: variant.deployments.solana.address,
+      symbol: "APE",
+    },
+    from: evmWallet,
+    to: solWallet,
+    amount: 10n ** 18n,
+    solanaRpcUrl: process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com",
+    read: ({ address, abi, functionName, args }) =>
+      client.readContract({ address, abi, functionName, args }),
+  });
+  console.log(
+    "Mainnet EVM → Solana read-only:",
+    JSON.stringify({
+      srcAmount: live.srcAmount,
+      dstAmount: live.dstAmount,
+      fees: live.fees,
+    }),
+  );
+  // Optionally use a supplied funded public holder for signature-disabled simulation.
+  // No wallet connection, signature, or broadcast is performed.
+  const simulationOwner = process.env.SOLANA_SIMULATION_OWNER;
+  if (!simulationOwner) {
+    console.log(
+      "Reverse mainnet simulation skipped: set SOLANA_SIMULATION_OWNER to a funded public APE holder address (no private key).",
+    );
+    process.exit(0);
+  }
+  const reverseLive = await load("direct-oft").buildDirectOftQuote({
+    metadata: { APE: [variant] },
+    srcChain: solChain,
+    dstChain: evmChain,
+    srcToken: {
+      ...sToken,
+      address: variant.deployments.solana.address,
+      symbol: "APE",
+    },
+    dstToken: {
+      ...eToken,
+      address:
+        variant.deployments.ethereum.innerTokenAddress ??
+        variant.deployments.ethereum.address,
+      symbol: "APE",
+    },
+    from: simulationOwner,
+    to: evmWallet,
+    amount: 1000000000n,
+    simulate: true,
+    solanaRpcUrl: process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com",
+    read: ({ address, abi, functionName, args }) =>
+      client.readContract({ address, abi, functionName, args }),
+  });
+  console.log(
+    "Mainnet Solana → EVM quote and unsigned send simulation:",
+    JSON.stringify({
+      srcAmount: reverseLive.srcAmount,
+      dstAmount: reverseLive.dstAmount,
+      fees: reverseLive.fees,
+    }),
+  );
+}
