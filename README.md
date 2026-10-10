@@ -1,13 +1,13 @@
 # Earthbound
 
-Earthbound is a compact cross-chain bridge frontend built around the interaction model popularized by Stargate. It is designed as a fast, single-page execution surface rather than a marketing site, with live quoting, route selection, wallet execution, and transfer tracking in one place.
+Earthbound is an independently operated cross-chain bridge with live quoting, route selection, wallet execution, and transfer tracking in one compact interface.
 
 This repository contains the Next.js application and its thin server-side proxy layer for Stargate and LayerZero APIs. It does not implement a custom bridging backend.
 
 ## Highlights
 
-- Stargate-aligned UX focused on fast route selection and execution
-- Optional switch from Stargate-backed routing to the LayerZero Direct API
+- Compact bridge workspace with consistent controls, opaque dialogs, and readable transfer statuses
+- Direct OFT transfers by default, with optional Standard or Direct API routing
 - User-managed custom OFT configs for direct LayerZero OFT transfers
 - Automatic live quotes with periodic refresh
 - Route comparison and selection in a single-page interface
@@ -21,43 +21,75 @@ Earthbound currently supports four practical operating modes:
 
 ### Default: direct OFT transfers
 
-The main transfer form now defaults to direct Endpoint V2 OFT contract calls on the configured EVM networks and Solana ↔ EVM routes. Earthbound discovers the mesh from LayerZero metadata by token address, verifies both peers, underlying tokens, decimals, and enforced receive gas, then calls `quoteOFT`, `quoteSend`, and `send`. ERC20 approvals target the OFT contract directly. This path does not use Stargate quote transactions or its product-fee wrapper and needs no LayerZero Transfer API key.
+The main transfer form now defaults to direct Endpoint V2 OFT contract calls on the configured EVM networks, Solana ↔ EVM and verified TON ↔ EVM routes, and EVM → Aptos / Starknet / Tron / Sui / Stellar routes. Earthbound discovers the mesh from LayerZero metadata by token address, verifies both peers, underlying tokens, decimals, and enforced receive gas, then calls `quoteOFT`, `quoteSend`, and `send`. ERC20 approvals target the OFT contract directly. This path does not use Stargate quote transactions or its product-fee wrapper and needs no LayerZero Transfer API key.
 
-For EVM pairs missing from the metadata directory, discovery probes the selected tokens for OFT peers in either direction. If neither token exposes the mesh, it requests a Stargate quote and decodes standard OFT `send` targets from supported transaction envelopes as candidate addresses. Every candidate must pass on-chain token and reciprocal-peer checks before the normal quote validation runs. API amounts, approvals, wrapper calls, and fees are never reused for execution. This discovery fallback currently applies to EVM ↔ EVM pairs only.
+For EVM pairs missing from the metadata directory, discovery probes the selected tokens for OFT peers in either direction. If neither token exposes the mesh, it requests a Stargate quote and decodes standard OFT `send` targets from supported transaction envelopes as candidate addresses. Every candidate must pass on-chain token and reciprocal-peer checks before the normal quote validation runs. API amounts, approvals, wrapper calls, and fees are never reused for execution. This discovery fallback also supports EVM → Solana, validating the destination store and its reverse peer with the Solana adapter.
+
+Solana adapters are selected automatically from on-chain program identity. USD.AI's Console OFT has a bidirectional adapter for Solana ↔ EVM: its store layout, initializer PDA, peer, token program, mint authority, escrow, lookup tables, token pause state, ATA rent, and destination rate limits are validated. sUSDai Arbitrum → Solana therefore quotes and builds a direct OFT send without a Stargate product-fee wrapper or a manual API switch. Active transfer hooks remain unsupported; sUSDai's hook is currently disabled. Console OFT sources discover stores through the mint authority (including Token-2022 multisigs), verify reciprocal EVM peers and token identity, simulate the deployed quote instructions, and build native Console send instructions using the issuer's lookup tables and LayerZero endpoint accounts. This does not require API hints or indexed Solana RPC queries. Unknown layouts never silently fall back to an API route.
+
+As checked on October 8, 2026, USDai and sUSDai Solana → Arbitrum both pass direct quotes and unsigned send simulations. Their Solana peers for Ethereum, Base, and Plasma are absent; sUSDai Ethereum → Solana also has no API quote; automatic adapter selection cannot create a missing on-chain path. Ethereum ↔ Arbitrum peers are configured. Run `node scripts/test-console-oft.mjs` for dispatch, discovery, send serialization, quote decoding and receive-policy regressions. `LIVE_CONSOLE_OFT=1 NODE_USE_ENV_PROXY=1 node scripts/test-console-oft-send-live.mjs` runs both Solana → Arbitrum routes with empty metadata, no API hints and unsigned send simulation (public test holders need sufficient token/SOL balances). `LIVE_SUSDAI_OFT=1 node scripts/test-susdai-direct-oft.mjs` compares direct and API Arbitrum quotes, validates calldata, and runs the deployed receive-account planner plus ATA creation in an unsigned simulation. It never signs or broadcasts and does not simulate end-to-end message delivery.
+
+Solana store discovery now also reads mint authorities, multisig signers and metadata escrow PDAs for standard and legacy deployments. The legacy LayerZero `OftConfig` adapter (including USDe, sUSDe and ENA) verifies the case-sensitive `Oft` PDA, token authority, peers, endpoint, send library, ATA state and custody liquidity, and builds its `quote`/`send` instructions directly. The live regression checks both Ethereum directions for all three tokens and simulates their unsigned Solana sends.
+
+Native EVM OFT adapters recognize the catalog's Eeee sentinel and on-chain zero token address, skip ERC-20 approvals, and send the dustless principal plus messaging fee as `msg.value`. Destination native liquidity is checked. The old Sonic and Sei native deployments have a broken `quoteOFT`; their reviewed dust-only receipt calculation is enabled only when chain, address and complete runtime bytecode hash match. Fees still come from the deployed `quoteSend`. Changed or unknown implementations retain normal on-chain quoting and fail closed. APE, CHZ, XDC, S and SEI → Solana pass unsigned EVM send simulations; those simulations override only a dummy sender's balance.
+
+Run `node scripts/test-legacy-solana-oft.mjs` and `node scripts/test-direct-oft.mjs` for the offline adapter and native-asset regressions. `LIVE_OFT_PEERS=1 NODE_USE_ENV_PROXY=1 node scripts/test-oft-peer-live.mjs` runs the live checks above; `SOLANA_RPC_URL` optionally selects a read-capable RPC. These checks do not sign, broadcast or prove eventual cross-chain delivery. A configured peer alone is insufficient: reciprocal peers, compatible accounting, active contracts, message libraries, issuer options and destination liquidity must also pass.
+
+ORDER uses its own 64-byte recipient/uint256 message, with 18 decimal places on EVM and 10 on Solana. The direct adapter pins the eight reviewed EVM proxy implementations and Solana program deployment, verifies caller restrictions, reciprocal peers, mint authority, integer bounds, rate limits and destination escrow capacity, and preserves sub-Solana dust in the EVM sender's wallet. Ethereum, Base, Arbitrum, BSC, Optimism, Polygon, Abstract and Avalanche have live bidirectional quote coverage; all eight Solana outbound sends were simulated and their emitted uint256 packets checked. An Arbitrum outbound send was also simulated using a public holder (native gas balance override only).
+
+PEAQ's native asset on chain 3338 is exposed through the ERC-20 balances precompile at `0x0000000000000000000000000000000000000809`. Its OFT adapter requires approval to that precompile and fee-only `msg.value`; the native principal is transferred through `transferFrom`. Destination escrow capacity is checked through `balanceOf`. PEAQ/Solana quotes and unsigned source sends pass in both directions; the PEAQ simulation uses a public holder with real balance and allowance, without state overrides. S, APE, CHZ, SEI, XDC, INJ and RBNT also have bidirectional Solana quotes and source-send simulations (EVM simulations override only dummy-sender native balances).
+
+Run `node scripts/test-orderly-oft.mjs` for codec, implementation, amount and caller guards. `LIVE_ORDERLY_OFT=1 NODE_USE_ENV_PROXY=1 node scripts/test-orderly-oft-live.mjs` repeats the ORDER mainnet checks. The peer live suite also covers PEAQ, INJ and RBNT; `LIVE_OFT_SYMBOLS=PEAQ,INJ,RBNT` optionally selects those cases. Live checks use public holder fixtures and never sign or broadcast. The follow-up results are in `reports/oft-adapter-followup-2026-10-08.json`.
+
+Single-hop API discovery also supports EVM → Aptos, Starknet, Tron, Sui, Stellar, and verified TON implementations. Composed sends, nonempty OFT commands, intermediate endpoint IDs, multi-step API routes, and single-step routes marked MULTIHOP are excluded from candidate discovery. A same-origin read-only endpoint validates destination state using fixed public RPC hosts (Sui GraphQL, Aptos REST/views, Starknet RPC, Tron constant-contract calls, Stellar Soroban simulations, TON account cells). Destination wallet selection or the explicit third-party recipient override is still required. Aptos, Starknet, Tron, Sui and Stellar currently support receiving from EVM. The reviewed TON implementations also support sending to EVM.
+
+Destination checks include reverse peers, token identity, local/shared decimals, recipient encoding, and receive capacity. Aptos supports standard mint/burn and escrow FA implementations, verifies legacy Coin → FA pairing, rejects blocked recipients and frozen escrows, and caps receipts by escrow liquidity. Starknet checks pause status and enabled inbound rate limits. Sui validates package capabilities, shared objects, coin metadata, pause status, and inbound capacity; unknown escrow treasury layouts remain unsupported. Tron reads the standard OFT ABI, validates Base58Check addresses, and paces public RPC requests.
+
+As checked on October 8, 2026, 11 additional routes have passed mainnet read-only quote and calldata comparisons: Ethereum → Aptos (USDe, sUSDe, WBTC), Base → Aptos (KGEN), BNB → Aptos (ELON), Ethereum → Starknet (WBTC, SolvBTC), Ethereum → Tron (USDe, sUSDe, HARD), and Ethereum → Sui (WBTC). Run `node scripts/test-non-evm-direct-oft.mjs` for offline guards, or `LIVE_NON_EVM_OFT=1 node scripts/test-non-evm-direct-oft.mjs` for live comparisons. Tests never sign or broadcast; quote success does not prove end-to-end delivery. Hypercore and IOTA direct destinations remain unsupported. No fee-bearing API fallback is automatic.
+
+Stellar additionally passed mainnet read-only comparisons for Ethereum → Stellar USDe, ENA, sUSDe, USDT, and PYUSD. Its adapter validates StrKey checksums, G/C recipient resolution, reverse peers, mint/burn or escrow credit types, pause state, rate limits, and escrow liquidity. Unsigned credit simulations check the exact received amount and reject missing trustlines before quoting. Run `node scripts/test-stellar-direct-oft.mjs` for offline guards, or `LIVE_STELLAR_OFT=1 node scripts/test-stellar-direct-oft.mjs` for mainnet quote comparisons. No transaction is signed or broadcast.
+
+TON receiving supports the verified EthenaOFT and XAUt0 OFT implementations. Mainnet read-only API/direct comparisons cover Ethereum → TON (USDe, ENA, XAUT → XAUt0) and Arbitrum / Polygon / Avalanche → TON (XAUt0). The adapter hashes deployed OFT, Jetton minter, and Jetton wallet code against reviewed versions, verifies reciprocal token/mint authority links, mainnet initialization, reverse peers, six-decimal accounting, receive gas configuration, and the derived recipient Jetton wallet. New Jetton wallets are supported; frozen accounts, incoming-transfer locks, changed implementations, and RPC failures block the quote. These contracts enforce pause and rate limits on outbound sends; inbound minting replenishes outbound capacity. The adapter preserves issuer-enforced executor options rather than equating those options with the TON contract's internal gas assertion. TON source execution is implemented for these reviewed OFT/minter/wallet code versions. It checks outbound pause/rate limits, chain time, source wallet locks and execution-time token/native balances; resolves the actual channel/message library; calls its on-chain ULN quote; preserves issuer options; and calculates source gas from current config 21. The browser reconstructs and checks the exact payload locally. Tokens are transferred to the minter for burning and forwarding to OFT, with refunds addressed to the sender. Unsigned mainnet-state TVM simulations verify PACKET_SENT and OFTSentSucceed for USDe/ENA → Ethereum and XAUt0 → Ethereum/Arbitrum/Polygon/Avalanche, including the recipient and amount in the 153-byte packet. This does not prove eventual destination delivery.
+
+The TON layouts and credit policy were checked against deployed verified source bundles returned by TONAPI `/v2/blockchain/accounts/{address}/inspect`; the source URLs and account-cell fixtures are recorded in `scripts/fixtures/ton-oft.json`. Production uses read-only Toncenter account lookups. Run `node scripts/test-ton-direct-oft.mjs` for offline guards and `LIVE_TON_OFT=1 node scripts/test-ton-direct-oft.mjs` for fresh API/direct mainnet comparisons. TON USDT's liquidity-backed `usdtOFT` implementation is not yet covered: the deployed code is not verified by TONAPI, and its current storage differs from the retrievable SDK/audit layouts; UDS has an unverified OFT code version and remains unsupported. A matching token symbol or an API quote never bypasses implementation checks. Run `node scripts/test-ton-send.mjs` for source guards and official-codec comparisons. `LIVE_TON_SEND=1 NODE_USE_ENV_PROXY=1 node scripts/test-ton-send-live.mjs` runs both-direction quotes and local TON source simulations against mainnet state; it never signs or broadcasts. `TON_SEND_CASE=USDe:ethereum` optionally selects a single case. TON SDK/quote logic stays server-side; only DTO checks and the compact transfer serializer enter the browser.
 
 `LIVE_SIERRA_OFT=1 node scripts/test-direct-oft.mjs` checks SIERRA Ethereum ↔ Avalanche using mainnet reads and compares the Stargate API quote with direct receipts. It never signs or broadcasts a transaction.
 
 Receive amounts reflect on-chain quotes, including local/shared decimal conversion and any OFT contract fee or reward. Direct integration removes the Stargate product fee; it does not promise 1:1 receipt for contracts that charge their own fee, or eliminate messaging and source transaction gas costs.
 
-Unsupported meshes, native assets, other non-EVM networks, or failed validation stop with an error. There is no automatic fallback to a fee-bearing API route. Users can explicitly enable **Use API routes (may include Stargate product fees)** for the existing API flow below. Custom OFT discovery/import remains available for selecting a specific mesh.
+Unsupported meshes, native assets, unsupported source/destination families, or failed validation stop with an error. There is no automatic fallback to a fee-bearing API route. Users can explicitly enable **Use API routes (provider fees may apply)** for the existing API flow below. Custom OFT discovery/import remains available for selecting a specific mesh.
 
-Solana uses a lazily loaded official OFT SDK adapter. It validates the OFT Store PDA, program ownership, mint, peer, decimal conversion, and token program. EVM → Solana derives the recipient ATA and adds only missing account-creation rent beyond the enforced receive value. Solana → EVM builds an unsigned v0 transaction with the official LayerZero lookup table and simulates it before wallet signing. Wallet execution checks the payer and expiry and confirms against the transaction's original blockhash; failed on-chain transactions are reported as failures.
+Solana uses a lazily loaded official OFT SDK adapter. It validates the OFT Store PDA, program ownership, mint, peer, decimal conversion, and token program. EVM → Solana derives the recipient ATA and adds only missing account-creation rent beyond the enforced receive value. Solana → EVM builds an unsigned v0 transaction with the official LayerZero lookup table and simulates it before wallet signing. Wallet execution checks the payer and validity before signing, then confirms the returned signature via HTTP status polling. Wallet-broadcast transactions are not expired using the pre-wallet blockhash because the wallet may rebuild the message. When the app broadcasts a known signed message itself, expiration requires finalized block height plus a historical signature lookup. RPC errors remain pending; on-chain execution errors are reported as failures.
 
-The Solana adapter supports the standard SDK account layout and SPL Token, plus Token-2022 mints with only metadata extensions. Custom OFT layouts, transfer hooks, transfer-fee extensions, and Endpoint V1 meshes are rejected explicitly. Solana source wallets need an existing associated token account and SOL for messaging and transaction fees. Configure a Solana RPC in RPC settings if the public endpoint is rate limited.
+The standard Solana adapter supports the SDK account layout and SPL Token, plus ordinary public-balance transfers for Token-2022 mints with metadata, mint-close authority, permanent delegate, and opt-in confidential extensions. Transfer-fee configurations are supported only when both current and scheduled fees are zero; transfer hooks must be disabled. Pausable mints are supported while unpaused. This includes USDG's current configuration. New destination ATA rent includes the required fee/hook/pausable account state. Active hooks, nonzero transfer fees, other unsupported extensions, unrecognized OFT layouts, and Endpoint V1 meshes are rejected explicitly. Solana source wallets need an existing associated token account and SOL for messaging and transaction fees. The default Solana RPC is PublicNode because the official public endpoint rejects browser-origin requests with 403. Configure a custom Solana RPC in RPC settings if the public endpoint is rate limited.
 
 Run `node scripts/test-solana-direct-oft.mjs` and `node scripts/test-solana-oft-adapter.mjs` for offline coverage. `LIVE_SOLANA_OFT=1 node scripts/test-solana-direct-oft.mjs` checks mainnet EVM → Solana quotes. Also set `SOLANA_SIMULATION_OWNER` to a funded public APE holder address to check Solana → EVM quotes and signature-disabled send simulation; otherwise that reverse check is explicitly skipped. No private key is needed, and the live check never signs or broadcasts transactions.
 
+Run `node scripts/test-solana-token-extensions.mjs` for USDG extension-policy and rent regressions. `LIVE_USDG_OFT=1 SOLANA_SIMULATION_OWNER=<funded-public-USDG-holder> node scripts/test-usdg-direct-oft.mjs` checks USDG quotes in both directions, an unsigned Solana send simulation, and actual ATA size/rent through simulation. The SDK and app share a pinned `@solana/web3.js` version because LayerZero checks `Connection` class identity during quotes.
+
+When a Solana RPC rejects indexed owner-balance queries, the balance display falls back to the associated token account used by direct OFT. Other token accounts are not included in that fallback balance.
+
 Direct transactions are re-quoted before execution and again after approvals. Worse receive amounts or higher messaging fees require a new quote. Source confirmation is tracked locally; destination settlement is linked to LayerZeroScan rather than queried with an API quote ID.
 
-### 1. Stargate (API routes)
+### 1. Standard API routes
 
 This is the default provider when users explicitly enable API routes.
 
 - Quotes, user steps, and status requests are routed through `https://stargate.finance/api/vt/*`
-- The interface is intentionally tuned to feel close to Stargate's production bridge flow
+- The interface labels this provider **Standard**
 
 ### 2. LayerZero Direct API
 
-When API routes are enabled, users can switch to LayerZero mode from the UI.
+When API routes are enabled, users can select **Direct API** from the UI.
 
 - Requests are routed through `https://transfer.layerzero-api.com/v1/*`
 - The app asks the user for a LayerZero API key before enabling direct mode
 - The key is stored only in the current browser under `earthbound.layerzero_api_key`
 - Requests are forwarded through this app's server routes using the `x-bridge-api-key` header
 
-### 3. Stargate v2 Fallback
+### 3. Default API fallback
 
-If the user switches to LayerZero mode but does not provide an API key, Earthbound falls back to:
+If the user selects Direct API but does not provide an API key, Earthbound falls back to:
 
 - `https://stargate.finance/api/v2/*`
 
@@ -111,12 +143,17 @@ Primary integration points:
 
 Wallet connection and execution logic are implemented per source chain type. The current codebase includes support for:
 
-- EVM via `wagmi` and injected wallets
-- Solana via `window.solana` / Phantom-compatible wallets
-- Aptos via injected Aptos wallets
+The header **Wallets** panel lets users select a detected wallet, view/copy the connected address, switch wallets, and disconnect for every supported chain family, independently of the selected bridge route. Sui/IOTA use the wallet’s selected account; EVM chain switching and fallback balance reads use the selected connector. TON opens its native wallet selector. Disconnect clears the app session; extension-level site permissions remain under the wallet’s control.
+
+The destination defaults to the connected wallet for the destination chain family and is read-only. Cross-family transfers require that destination wallet to be connected, unless the user explicitly enables **Send to a third-party address** and enters a valid recipient. Third-party overrides are scoped to the selected destination chain. Disconnecting the destination wallet immediately clears the default recipient and invalidates its quote; a compatible address format alone never substitutes a source wallet for another chain family.
+
+- EVM via `wagmi`, EIP-6963 wallet discovery, and a legacy injected-wallet fallback
+- Solana via explicit Backpack / Phantom selection, plus compatible `window.solana` wallets. Connection, signing, and disconnect use the selected provider; account changes invalidate quotes and update balances.
+- Aptos via compatible injected Aptos / Petra providers
 - Tron via TronLink
-- Starknet via injected Starknet wallets
-- TON via TonConnect
+- Starknet via explicit Argent X / Braavos / compatible injected wallet selection
+- Stellar via Freighter for destination accounts, with mainnet validation, account/network change tracking, copy, and app-session disconnect. Stellar source execution is not implemented.
+- TON via TonConnect, restricted to mainnet; testnet sessions do not supply destination addresses. Raw basechain and checksummed mainnet friendly addresses are accepted.
 - Sui via `@mysten/dapp-kit`
 - IOTA Move via `@iota/dapp-kit`
 
@@ -232,3 +269,9 @@ src/
 ## Contributing
 
 Issues and pull requests are welcome. If you plan to change bridge behavior, it is usually best to verify both the API proxy routes and the chain-specific execution logic together, since they are tightly coupled.
+
+The layout fills desktop viewports without a fixed maximum width. The compact header places the operator attribution beside Earthbound. Toggle controls support keyboard operation; dialogs and floating notifications use opaque backgrounds. Transfer statuses are formatted for display instead of exposing internal status codes. Transfer history uses compact summaries with expandable details and independent scrolling. The most recent 30 records are written immediately to versioned localStorage and survive refresh, closing tabs, and browser restarts on the same site. Existing sessionStorage history is migrated automatically. Open tabs receive history updates through storage events; storage failures are shown in the Transfers panel. Solana submissions expose the signature immediately, offer a read-only **Check status** action, and block the same transfer while confirmation remains unresolved. Notifications are deduplicated and limited to two.
+
+Run `node scripts/test-solana-confirmation.mjs` for confirmation/expiration regressions, and `node scripts/test-bridge-wallet-payload-guards.mjs` for selected-wallet submission and transaction safety checks.
+
+Run `node scripts/test-execution-history.mjs` for durable history, session migration, interrupted submissions, merging, and storage-failure regressions.
