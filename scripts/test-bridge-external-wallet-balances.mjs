@@ -3,6 +3,11 @@ import { readFileSync } from "node:fs";
 import { Script } from "node:vm";
 import ts from "typescript";
 
+const confirmationModule = { exports: {} };
+new Script(ts.transpileModule(readFileSync(new URL("../src/lib/solana-confirmation.ts", import.meta.url), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+}).outputText).runInNewContext({ module: confirmationModule, exports: confirmationModule.exports, setTimeout });
+
 const source = readFileSync(new URL("../src/lib/bridge-wallets.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: {
@@ -12,6 +17,12 @@ const { outputText } = ts.transpileModule(source, {
 });
 
 const calls = [];
+let indexedError;
+let fallbackMissing = false;
+let fallbackFrozen = false;
+let fallbackWrongOwner = false;
+const key = (value) => ({ toBase58: () => value, equals: (other) => other.toBase58() === value });
+const tokenProgram = key("token-2022-program");
 const commonJsModule = { exports: {} };
 const sandbox = {
   exports: commonJsModule.exports,
@@ -38,6 +49,7 @@ const sandbox = {
 
           async getParsedTokenAccountsByOwner(owner, filter) {
             calls.push(["getParsedTokenAccountsByOwner", owner.toBase58(), filter.mint.toBase58()]);
+            if (indexedError) throw indexedError;
             const tokenBalances = {
               DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT: ["42000000000", "8000000000"],
               Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN: ["123000000000"],
@@ -48,6 +60,12 @@ const sandbox = {
                 account: { data: { parsed: { info: { tokenAmount: { amount } } } } },
               })),
             };
+          }
+
+          async getAccountInfo(address) {
+            calls.push(["getAccountInfo", address.toBase58()]);
+            if (address.toBase58() === "test-mint") return { owner: tokenProgram };
+            return fallbackMissing ? null : { owner: tokenProgram };
           }
         },
         PublicKey: class PublicKey {
@@ -63,6 +81,24 @@ const sandbox = {
           deserialize: () => ({}),
         },
         clusterApiUrl: () => "https://api.mainnet-beta.solana.com",
+      };
+    }
+
+    if (specifier === "@solana/spl-token") {
+      return {
+        TOKEN_PROGRAM_ID: key("token-program"),
+        TOKEN_2022_PROGRAM_ID: tokenProgram,
+        getAssociatedTokenAddressSync: (mint, owner, allowOffCurve, program) => {
+          assert.equal(mint.toBase58(), "test-mint");
+          assert.equal(owner.toBase58(), "solana-owner");
+          assert.equal(allowOffCurve, true);
+          assert.equal(program, tokenProgram);
+          return key("test-ata");
+        },
+        unpackAccount: () => ({
+          owner: key(fallbackWrongOwner ? "wrong-owner" : "solana-owner"),
+          mint: key("test-mint"), isInitialized: true, isFrozen: fallbackFrozen, amount: 123456n,
+        }),
       };
     }
 
@@ -121,6 +157,7 @@ const sandbox = {
       };
     }
 
+    if (specifier === "./solana-confirmation") return confirmationModule.exports;
     throw new Error(`Unexpected require: ${specifier}`);
   },
 };
@@ -234,3 +271,19 @@ assert.deepEqual(calls, [
   ["iota-client", "https://custom-iota.example"],
   ["iota-getBalance", "iota-owner", "0x456::coin::COIN"],
 ]);
+
+indexedError = new Error("403: Indexed requests require a personal token.");
+const request = { chainType: "SOLANA", account: "solana-owner", tokenAddress: "test-mint" };
+assert.equal(await fetchExternalWalletBalance(request), 123456n);
+assert.deepEqual(calls.slice(-2), [["getAccountInfo", "test-mint"], ["getAccountInfo", "test-ata"]]);
+fallbackMissing = true;
+assert.equal(await fetchExternalWalletBalance(request), 0n);
+fallbackMissing = false;
+fallbackFrozen = true;
+assert.equal(await fetchExternalWalletBalance(request), 0n);
+fallbackFrozen = false;
+fallbackWrongOwner = true;
+await assert.rejects(fetchExternalWalletBalance(request), /Invalid Solana associated token account/);
+indexedError = new Error("network timeout");
+await assert.rejects(fetchExternalWalletBalance(request), /network timeout/);
+console.log("External balances: indexed balances, Token-2022 ATA fallback, missing/frozen accounts, owner checks, and RPC errors passed.");

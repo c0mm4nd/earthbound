@@ -3,6 +3,11 @@ import { readFileSync } from "node:fs";
 import { Script } from "node:vm";
 import ts from "typescript";
 
+const confirmationModule = { exports: {} };
+new Script(ts.transpileModule(readFileSync(new URL("../src/lib/solana-confirmation.ts", import.meta.url), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+}).outputText).runInNewContext({ module: confirmationModule, exports: confirmationModule.exports, setTimeout });
+
 const source = readFileSync(new URL("../src/lib/bridge-wallets.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: {
@@ -17,7 +22,8 @@ let solanaConfirmationError = null;
 let solanaSimulationError = null;
 let afterSolanaSimulation = () => {};
 let solanaSignCount = 0;
-let confirmedSolanaContext;
+let confirmedSolanaSignatures;
+const solanaSubmissionEvents = [];
 const commonJsModule = { exports: {} };
 const sandbox = {
   exports: commonJsModule.exports,
@@ -42,7 +48,8 @@ const sandbox = {
         Connection: class Connection {
           async simulateTransaction() { afterSolanaSimulation(); return { value: { err: solanaSimulationError } }; }
           async isBlockhashValid() { return { value: solanaBlockhashValid }; }
-          async confirmTransaction(context) { confirmedSolanaContext = context; return { value: { err: solanaConfirmationError } }; }
+          async getSignatureStatuses(signatures) { solanaSubmissionEvents.push("status"); confirmedSolanaSignatures = signatures; return { value: [{ err: solanaConfirmationError, confirmationStatus: "confirmed" }] }; }
+          async confirmTransaction() { throw new Error("WebSocket confirmation must not be used"); }
         },
         PublicKey: class PublicKey {},
         VersionedTransaction: {
@@ -85,6 +92,7 @@ const sandbox = {
       };
     }
 
+    if (specifier === "./solana-confirmation") return confirmationModule.exports;
     throw new Error(`Unexpected require: ${specifier}`);
   },
 };
@@ -146,8 +154,7 @@ const directSolanaStep = {
   } },
 };
 assert.equal(await executeSolanaUserSteps([directSolanaStep]), "solana-signature");
-assert.equal(confirmedSolanaContext.blockhash, "original-blockhash");
-assert.equal(confirmedSolanaContext.lastValidBlockHeight, 123);
+assert.equal(confirmedSolanaSignatures[0], "solana-signature");
 assert.equal(solanaSignCount, 1);
 solanaBlockhashValid = false;
 await assert.rejects(executeSolanaUserSteps([directSolanaStep]), /expired/);
@@ -164,7 +171,7 @@ solanaConfirmationError = { InstructionError: [0, "Custom"] };
 await assert.rejects(executeSolanaUserSteps([directSolanaStep]), /Solana transaction failed/);
 solanaConfirmationError = null;
 await executeSolanaUserSteps([{ ...directSolanaStep, transaction: { encoded: { encoding: "base64", data: "dHg=" } } }]);
-assert.equal(confirmedSolanaContext, "solana-signature", "legacy API payloads retain signature-based confirmation");
+assert.equal(confirmedSolanaSignatures[0], "solana-signature", "legacy API payloads use HTTP signature status checks");
 console.log("Wallet guards: Solana expiry, payer, original blockhash, failed confirmation, and legacy API payloads passed.");
 
 const makeStep = (chainType, encoded) => ({ type: "TRANSACTION", chainType, transaction: { encoded } });
@@ -224,3 +231,120 @@ assert.equal(solanaSignCount, signsBeforeAccountSwitch, "account switch during s
 solanaWalletAddress = "payer";
 afterSolanaSimulation = () => {};
 console.log("Quoted source accounts and Solana account switches during simulation are guarded.");
+
+// Explicit Solana wallet selection must remain stable when extensions coexist.
+const { connectExternalWallet, disconnectExternalWallet, getSolanaWalletOptions, subscribeSolanaWallet } = commonJsModule.exports;
+function makeSolanaWallet(name) {
+  const listeners = new Map();
+  return {
+    isBackpack: name === "Backpack", isPhantom: name === "Phantom",
+    publicKey: { toBase58: () => "payer" },
+    connects: 0, signs: 0, disconnects: 0, rejectConnect: false,
+    async connect() {
+      this.connects++;
+      if (this.rejectConnect) throw new Error("User rejected connection");
+      return { publicKey: this.publicKey };
+    },
+    async signAndSendTransaction() { this.signs++; return { signature: `${name}-signature` }; },
+    async disconnect() { this.disconnects++; this.publicKey = null; this.emit("disconnect"); },
+    on(event, listener) { if (!listeners.has(event)) listeners.set(event, new Set()); listeners.get(event).add(listener); },
+    removeListener(event, listener) { listeners.get(event)?.delete(listener); },
+    emit(event, ...args) { for (const listener of listeners.get(event) ?? []) listener(...args); },
+  };
+}
+const backpack = makeSolanaWallet("Backpack");
+const phantom = makeSolanaWallet("Phantom");
+sandbox.window.backpack = backpack;
+sandbox.window.phantom = { solana: phantom };
+sandbox.window.solana = phantom;
+assert.equal(getSolanaWalletOptions().filter((wallet) => wallet.installed).length, 2);
+const connectedBackpack = await connectExternalWallet("SOLANA", "backpack");
+assert.equal(connectedBackpack.label, "Backpack");
+assert.equal(connectedBackpack.solanaWalletId, "backpack");
+assert.equal(phantom.connects, 0);
+assert.equal(await rawSolanaUserSteps([directSolanaStep], "payer", connectedBackpack.solanaWalletId), "Backpack-signature");
+assert.equal(backpack.signs, 1);
+assert.equal(phantom.signs, 0);
+const connectedPhantom = await connectExternalWallet("SOLANA", "phantom");
+assert.equal(connectedPhantom.label, "Phantom");
+assert.equal(await rawSolanaUserSteps([directSolanaStep], "payer", "phantom"), "Phantom-signature");
+assert.equal(phantom.signs, 1);
+// Rejection must not prompt the other extension.
+backpack.rejectConnect = true;
+const phantomConnections = phantom.connects;
+await assert.rejects(connectExternalWallet("SOLANA", "backpack"), /rejected/);
+assert.equal(phantom.connects, phantomConnections);
+backpack.rejectConnect = false;
+const observedAccounts = [];
+const unsubscribe = subscribeSolanaWallet("backpack", (address) => observedAccounts.push(address));
+phantom.publicKey = { toBase58: () => "phantom-switched" };
+phantom.emit("accountChanged", phantom.publicKey);
+assert.deepEqual(observedAccounts, ["payer"]);
+backpack.publicKey = { toBase58: () => "backpack-switched" };
+backpack.emit("accountChanged", { publicKey: "backpack-switched" });
+assert.deepEqual(observedAccounts, ["payer", "backpack-switched"]);
+await assert.rejects(rawSolanaUserSteps([directSolanaStep], "payer", "backpack"), /wallet changed/);
+assert.equal(backpack.signs, 1);
+await disconnectExternalWallet("SOLANA", "backpack");
+assert.equal(backpack.disconnects, 1);
+assert.equal(phantom.disconnects, 0);
+assert.equal(observedAccounts.at(-1), null);
+unsubscribe();
+backpack.publicKey = { toBase58: () => "payer" };
+backpack.emit("accountChanged", { publicKey: "payer" });
+assert.equal(observedAccounts.length, 3, "unsubscribed wallet events must be ignored");
+// Backpack-only injection and its window.solana alias both work.
+delete sandbox.window.phantom;
+delete sandbox.window.solana;
+assert.equal((await connectExternalWallet("SOLANA")).label, "Backpack");
+sandbox.window.solana = backpack;
+delete sandbox.window.backpack;
+assert.equal((await connectExternalWallet("SOLANA", "backpack")).solanaWalletId, "backpack");
+assert.equal(getSolanaWalletOptions().filter((wallet) => wallet.installed).length, 1);
+sandbox.window.solana = phantom;
+await assert.rejects(connectExternalWallet("SOLANA", "backpack"), /not detected/);
+await assert.rejects(rawSolanaUserSteps([directSolanaStep], "payer", "backpack"), /unavailable/);
+assert.equal(phantom.signs, 1, "missing selected wallet must never fall back to Phantom");
+delete sandbox.window.solana;
+assert.equal(getSolanaWalletOptions().some((wallet) => wallet.installed), false);
+console.log("Backpack: discovery, explicit selection with Phantom, signing isolation, rejection, disconnect, account events, cleanup, and missing-wallet guards passed.");
+
+// Aptos and Starknet selections must not fall back to the default injection.
+const externalCalls = [];
+sandbox.window.aptos = { connect: async () => { throw new Error('Wrong Aptos wallet'); } };
+sandbox.window.petra = {
+  connect: async () => { externalCalls.push('petra:connect'); return { address: '0x1' }; },
+  account: async () => ({ address: '0x1' }),
+  disconnect: async () => externalCalls.push('petra:disconnect'),
+  signAndSubmitTransaction: async () => { externalCalls.push('petra:sign'); return { hash: 'petra-hash' }; },
+};
+assert.equal((await connectExternalWallet('APTOS', 'petra')).walletId, 'petra');
+assert.equal(await commonJsModule.exports.executeAptosUserSteps([aptosStep], '0x1', 'petra'), 'petra-hash');
+await disconnectExternalWallet('APTOS', 'petra');
+assert.deepEqual(externalCalls, ['petra:connect', 'petra:sign', 'petra:disconnect']);
+await assert.rejects(connectExternalWallet('APTOS', 'missing'), /No Aptos wallet/);
+sandbox.window.starknet = { request: async () => { throw new Error('Wrong Starknet wallet'); } };
+sandbox.window.starknet_braavos = {
+  selectedAddress: '0x1',
+  enable: async () => externalCalls.push('braavos:connect'),
+  disconnect: async () => externalCalls.push('braavos:disconnect'),
+  account: { address: '0x1', execute: async () => { externalCalls.push('braavos:sign'); return { transaction_hash: 'braavos-hash' }; } },
+};
+assert.equal((await connectExternalWallet('STARKNET', 'braavos')).walletId, 'braavos');
+assert.equal(await commonJsModule.exports.executeStarknetUserSteps([makeStep('STARKNET', { calls: [starkCall] })], '0x1', 'braavos'), 'braavos-hash');
+await disconnectExternalWallet('STARKNET', 'braavos');
+assert.deepEqual(externalCalls.slice(3), ['braavos:connect', 'braavos:sign', 'braavos:disconnect']);
+await assert.rejects(connectExternalWallet('STARKNET', 'missing'), /No Starknet wallet/);
+console.log('Aptos/Starknet: explicit provider selection persists through connection, signing and disconnect; unavailable providers never fall back.');
+
+// Persist the wallet-returned signature before any confirmation request. A wallet
+// can replace the blockhash internally, so pre-wallet validity must not leak here.
+sandbox.window.phantom = { solana: makeSolanaWallet("Phantom") };
+solanaSubmissionEvents.length = 0;
+await rawSolanaUserSteps([directSolanaStep], "payer", "phantom", (submission) => {
+  assert.equal(submission.signature, "Phantom-signature");
+  assert.equal(submission.validity, undefined);
+  solanaSubmissionEvents.push("submitted");
+});
+assert.deepEqual(solanaSubmissionEvents, ["submitted", "status"]);
+console.log("Solana submission: signature exposed before HTTP confirmation; wallet-broadcast validity is independent of the original blockhash.");

@@ -14,7 +14,7 @@ type InjectedEvmRequestArguments = {
   params?: unknown[] | Record<string, unknown>;
 };
 
-type InjectedEvmProvider = {
+export type InjectedEvmProvider = {
   request(args: InjectedEvmRequestArguments): Promise<unknown>;
 };
 
@@ -41,9 +41,17 @@ export function getInjectedEvmProvider() {
   return window.ethereum;
 }
 
-export async function switchInjectedEvmChain(chainId: number, chainName: string) {
+export async function getConnectorEvmProvider(connector?: { getProvider(): Promise<unknown> }): Promise<InjectedEvmProvider> {
+  const provider = await connector?.getProvider();
+  if (!provider || typeof (provider as InjectedEvmProvider).request !== "function") {
+    throw new Error("Reconnect the selected EVM wallet.");
+  }
+  return provider as InjectedEvmProvider;
+}
+
+export async function switchInjectedEvmChain(chainId: number, chainName: string, provider?: InjectedEvmProvider) {
   try {
-    await getInjectedEvmProvider().request({
+    await (provider ?? getInjectedEvmProvider()).request({
       method: "wallet_switchEthereumChain",
       params: [{ chainId: toHex(chainId) }],
     });
@@ -65,13 +73,15 @@ export async function readInjectedEvmContract<T>({
   address,
   args,
   functionName,
+  provider,
 }: {
   abi: Abi;
   address: Address;
   args?: readonly unknown[];
   functionName: string;
+  provider?: InjectedEvmProvider;
 }) {
-  const data = await getInjectedEvmProvider().request({
+  const data = await (provider ?? getInjectedEvmProvider()).request({
     method: "eth_call",
     params: [
       {
@@ -96,12 +106,14 @@ export async function readInjectedEvmContract<T>({
 export async function fetchInjectedEvmBalance({
   account,
   tokenAddress,
+  provider,
 }: {
   account: Address;
   tokenAddress?: Address | null;
+  provider?: InjectedEvmProvider;
 }) {
   if (!tokenAddress) {
-    const balance = await getInjectedEvmProvider().request({
+    const balance = await (provider ?? getInjectedEvmProvider()).request({
       method: "eth_getBalance",
       params: [account, "latest"],
     });
@@ -114,6 +126,7 @@ export async function fetchInjectedEvmBalance({
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [account],
+    provider,
   });
 
   return balance;

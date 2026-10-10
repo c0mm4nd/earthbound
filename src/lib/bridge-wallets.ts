@@ -1,5 +1,7 @@
 "use client";
 
+import { confirmSolanaSubmission, inspectSolanaSubmission, type SolanaSubmission } from "./solana-confirmation";
+
 import { IotaClient } from "@iota/iota-sdk/client";
 import { IOTA_TYPE_ARG } from "@iota/iota-sdk/utils";
 import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
@@ -7,11 +9,16 @@ import { SUI_TYPE_ARG } from "@mysten/sui/utils";
 import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import type { BridgeChainType, QuoteUserStep, TransactionPayload } from "@/lib/bridge-types";
 import { loadRpcConfig, getEffectiveRpcUrls } from "@/lib/rpc-config";
+import type { WalletOption } from "./wallet-options";
 
 type WalletConnectResult = {
   address: string;
   label: string;
+  solanaWalletId?: SolanaWalletId;
+  walletId?: string;
 };
+
+export type SolanaWalletId = "phantom" | "backpack" | "injected";
 
 type WalletBalanceRequest = {
   chainType: BridgeChainType | undefined | null;
@@ -35,9 +42,12 @@ type SolanaTransactionResult = {
 
 type SolanaWalletProvider = {
   isPhantom?: boolean;
-  publicKey?: SolanaWalletPublicKey;
+  isBackpack?: boolean;
+  publicKey?: SolanaWalletPublicKey | null;
   connect(options?: { onlyIfTrusted?: boolean }): Promise<{ publicKey?: SolanaWalletPublicKey }>;
   disconnect?(): Promise<void>;
+  on?(event: "accountChanged" | "disconnect", listener: () => void): void;
+  removeListener?(event: "accountChanged" | "disconnect", listener: () => void): void;
   signTransaction?(transaction: VersionedTransaction): Promise<VersionedTransaction>;
   signAndSendTransaction?(
     transaction: VersionedTransaction,
@@ -52,6 +62,7 @@ type AptosTransactionResult = {
 };
 
 type AptosWalletProvider = {
+  name?: string;
   connect(): Promise<{ address?: string }>;
   account?(): Promise<{ address?: string }>;
   disconnect?(): Promise<void>;
@@ -79,6 +90,7 @@ type TronWebProvider = {
 };
 
 type TronLinkProvider = {
+  disconnect?(): Promise<void>;
   request?(args: { method: string }): Promise<unknown>;
   tronWeb?: TronWebProvider;
 };
@@ -101,6 +113,8 @@ type StarknetTransactionResult = {
 };
 
 type StarknetWalletProvider = {
+  name?: string;
+  disconnect?(): Promise<void>;
   enable?(): Promise<string[] | void>;
   request?(args: {
     type?: string;
@@ -144,10 +158,14 @@ declare global {
       solana?: SolanaWalletProvider;
     };
     solana?: SolanaWalletProvider;
+    backpack?: SolanaWalletProvider;
     aptos?: AptosWalletProvider;
+    petra?: AptosWalletProvider;
     tronLink?: TronLinkProvider;
     tronWeb?: TronWebProvider;
     starknet?: StarknetWalletProvider;
+    starknet_argentX?: StarknetWalletProvider;
+    starknet_braavos?: StarknetWalletProvider;
   }
 }
 
@@ -295,12 +313,81 @@ function getSerializedTransactionCandidate(
   return null;
 }
 
-function getSolanaWalletProvider() {
+function getSolanaWalletProvider(walletId?: string): SolanaWalletProvider | null {
   if (typeof window === "undefined") {
     return null;
   }
 
-  return window.phantom?.solana ?? window.solana ?? null;
+  const phantom = window.phantom?.solana ?? (window.solana?.isPhantom ? window.solana : null);
+  const backpack = window.backpack ?? (window.solana?.isBackpack ? window.solana : null);
+  // An explicit selection must never silently fall back to another wallet.
+  if (walletId === "phantom") return phantom;
+  if (walletId === "backpack") return backpack;
+  if (walletId === "injected") {
+    return window.solana && window.solana !== phantom && window.solana !== backpack
+      ? window.solana : null;
+  }
+  if (walletId) return null;
+  return phantom ?? backpack ?? window.solana ?? null;
+}
+
+function aptosWalletEntries() {
+  if (typeof window === "undefined") return [];
+  return [
+    { id: "petra", label: "Petra", provider: window.petra },
+    { id: "aptos", label: window.aptos?.name ?? "Aptos Wallet", provider: window.aptos },
+  ].filter((entry, index, entries) => entry.provider && entries.findIndex((other) => other.provider === entry.provider) === index);
+}
+
+function starknetWalletEntries() {
+  if (typeof window === "undefined") return [];
+  return [
+    { id: "argentX", label: window.starknet_argentX?.name ?? "Argent X", provider: window.starknet_argentX },
+    { id: "braavos", label: window.starknet_braavos?.name ?? "Braavos", provider: window.starknet_braavos },
+    { id: "starknet", label: window.starknet?.name ?? "Starknet Wallet", provider: window.starknet },
+  ].filter((entry, index, entries) => entry.provider && entries.findIndex((other) => other.provider === entry.provider) === index);
+}
+
+function getAptosWalletProvider(walletId?: string) {
+  return walletId ? aptosWalletEntries().find((entry) => entry.id === walletId)?.provider : window.aptos ?? window.petra;
+}
+
+function getStarknetWalletProvider(walletId?: string) {
+  return walletId ? starknetWalletEntries().find((entry) => entry.id === walletId)?.provider : window.starknet ?? window.starknet_argentX ?? window.starknet_braavos;
+}
+
+export function getExternalWalletOptions(chainType: BridgeChainType): WalletOption[] {
+  if (chainType === "SOLANA") return getSolanaWalletOptions();
+  if (typeof window === "undefined") return [];
+  if (chainType === "APTOS") return aptosWalletEntries().map(({ id, label }) => ({ id, label, installed: true }));
+  if (chainType === "STARKNET") return starknetWalletEntries().map(({ id, label }) => ({ id, label, installed: true }));
+  if (chainType === "STELLAR") return [{ id: "freighter", label: "Freighter", installed: Boolean((window as Window & { freighter?: boolean }).freighter) }];
+  if (chainType === "TRON") return [{ id: "tronlink", label: "TronLink", installed: Boolean(window.tronLink || window.tronWeb) }];
+  return [];
+}
+
+export function getSolanaWalletOptions(): { id: SolanaWalletId; label: string; installed: boolean }[] {
+  const options: { id: SolanaWalletId; label: string; installed: boolean }[] = [
+    { id: "backpack", label: "Backpack", installed: Boolean(getSolanaWalletProvider("backpack")) },
+    { id: "phantom", label: "Phantom", installed: Boolean(getSolanaWalletProvider("phantom")) },
+  ];
+  if (getSolanaWalletProvider("injected")) options.push({ id: "injected", label: "Solana Wallet", installed: true });
+  return options;
+}
+
+export function subscribeSolanaWallet(walletId: SolanaWalletId, onAddressChange: (address: string | null) => void) {
+  const provider = getSolanaWalletProvider(walletId);
+  // Backpack and Phantom emit different accountChanged payloads. Both update
+  // publicKey before emitting, so use the selected provider as the source.
+  const accountChanged = () => onAddressChange(provider?.publicKey?.toBase58() ?? null);
+  const disconnected = () => onAddressChange(null);
+  provider?.on?.("accountChanged", accountChanged);
+  provider?.on?.("disconnect", disconnected);
+  accountChanged();
+  return () => {
+    provider?.removeListener?.("accountChanged", accountChanged);
+    provider?.removeListener?.("disconnect", disconnected);
+  };
 }
 
 function getSolanaConnection() {
@@ -624,6 +711,7 @@ async function signAndSubmitAptosPayload(
 
 export async function connectExternalWallet(
   chainType: BridgeChainType | undefined | null,
+  walletId?: string,
 ): Promise<WalletConnectResult> {
   if (typeof window === "undefined") {
     throw new Error("Wallet connection is only available in the browser.");
@@ -631,10 +719,10 @@ export async function connectExternalWallet(
 
   switch (chainType) {
     case "SOLANA": {
-      const provider = getSolanaWalletProvider();
+      const provider = getSolanaWalletProvider(walletId);
 
       if (!provider) {
-        throw new Error("No Solana wallet found. Install Phantom or a compatible wallet.");
+        throw new Error("Solana wallet not detected. Install or enable Backpack, Phantom, or a compatible wallet.");
       }
 
       const result = await provider.connect();
@@ -644,13 +732,16 @@ export async function connectExternalWallet(
         throw new Error("Failed to read the connected Solana wallet address.");
       }
 
+      const selected = getSolanaWalletOptions().find((option) => getSolanaWalletProvider(option.id) === provider)!;
       return {
         address,
-        label: provider.isPhantom ? "Phantom" : "Solana Wallet",
+        label: selected.label,
+        solanaWalletId: selected.id,
+        walletId: selected.id,
       };
     }
     case "APTOS": {
-      const provider = window.aptos;
+      const provider = getAptosWalletProvider(walletId);
 
       if (!provider) {
         throw new Error("No Aptos wallet found. Install Petra or a compatible wallet.");
@@ -666,10 +757,12 @@ export async function connectExternalWallet(
 
       return {
         address,
-        label: "Aptos Wallet",
+        label: aptosWalletEntries().find((entry) => entry.provider === provider)!.label,
+        walletId: aptosWalletEntries().find((entry) => entry.provider === provider)!.id,
       };
     }
     case "TRON": {
+      if (walletId && walletId !== "tronlink") throw new Error("Selected Tron wallet is unavailable.");
       await window.tronLink?.request?.({ method: "tron_requestAccounts" });
       const address = getTronWebProvider()?.defaultAddress?.base58;
 
@@ -680,14 +773,15 @@ export async function connectExternalWallet(
       return {
         address,
         label: "TronLink",
+        walletId: "tronlink",
       };
     }
     case "STARKNET": {
-      if (!window.starknet) {
+      const provider = getStarknetWalletProvider(walletId);
+      if (!provider) {
         throw new Error("No Starknet wallet found. Install Braavos or Argent X.");
       }
 
-      const provider = window.starknet;
       const requestedAccounts = provider.request
         ? await provider.request({ type: "wallet_requestAccounts" })
         : undefined;
@@ -708,8 +802,13 @@ export async function connectExternalWallet(
 
       return {
         address,
-        label: "Starknet Wallet",
+        label: starknetWalletEntries().find((entry) => entry.provider === provider)!.label,
+        walletId: starknetWalletEntries().find((entry) => entry.provider === provider)!.id,
       };
+    }
+    case "STELLAR": {
+      const { connectStellarWallet } = await import("./stellar-wallet");
+      return connectStellarWallet(walletId);
     }
     case "TON":
       throw new Error("TON wallet connection is handled by TonConnect.");
@@ -722,17 +821,23 @@ export async function connectExternalWallet(
   }
 }
 
-export async function disconnectExternalWallet(chainType: BridgeChainType | undefined | null) {
+export async function disconnectExternalWallet(chainType: BridgeChainType | undefined | null, walletId?: string) {
   if (typeof window === "undefined") {
     return;
   }
 
   switch (chainType) {
     case "SOLANA":
-      await getSolanaWalletProvider()?.disconnect?.();
+      await getSolanaWalletProvider(walletId)?.disconnect?.();
       return;
     case "APTOS":
-      await window.aptos?.disconnect?.();
+      await getAptosWalletProvider(walletId)?.disconnect?.();
+      return;
+    case "STARKNET":
+      await getStarknetWalletProvider(walletId)?.disconnect?.();
+      return;
+    case "TRON":
+      await window.tronLink?.disconnect?.();
       return;
     default:
       return;
@@ -755,11 +860,31 @@ export async function fetchExternalWalletBalance({
       }
 
       const mint = new PublicKey(normalizedTokenAddress);
-      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(owner, { mint });
-      return tokenAccounts.value.reduce((total, accountInfo) => {
-        const amount = getParsedTokenAmount(accountInfo);
-        return amount === null ? total : total + BigInt(amount);
-      }, BigInt(0));
+      try {
+        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(owner, { mint });
+        return tokenAccounts.value.reduce((total, accountInfo) => {
+          const amount = getParsedTokenAmount(accountInfo);
+          return amount === null ? total : total + BigInt(amount);
+        }, BigInt(0));
+      } catch (error) {
+        // PublicNode restricts indexed owner scans. Direct OFT spends from the
+        // ATA, whose balance can still be read without an index or API key.
+        if (!/indexed requests require/i.test(String(error))) throw error;
+        const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddressSync, unpackAccount } =
+          await import("@solana/spl-token");
+        const mintInfo = await connection.getAccountInfo(mint);
+        if (!mintInfo || (!mintInfo.owner.equals(TOKEN_PROGRAM_ID) && !mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID))) {
+          throw new Error("Unsupported Solana token program.");
+        }
+        const ata = getAssociatedTokenAddressSync(mint, owner, true, mintInfo.owner);
+        const accountInfo = await connection.getAccountInfo(ata);
+        if (!accountInfo) return BigInt(0);
+        const account = unpackAccount(ata, accountInfo, mintInfo.owner);
+        if (!account.owner.equals(owner) || !account.mint.equals(mint) || !account.isInitialized) {
+          throw new Error("Invalid Solana associated token account.");
+        }
+        return account.isFrozen ? BigInt(0) : account.amount;
+      }
     }
     case "SUI": {
       const coinType = getMoveCoinType(tokenAddress, SUI_TYPE_ARG);
@@ -822,12 +947,12 @@ function assertWalletAccount(actual: string | undefined, expected: string, hex =
   }
 }
 
-export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expectedAccount: string) {
+export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expectedAccount: string, solanaWalletId?: SolanaWalletId, onSubmitted?: (submission: SolanaSubmission) => void) {
   assertExternalPlan(userSteps, "SOLANA");
-  const provider = getSolanaWalletProvider();
+  const provider = getSolanaWalletProvider(solanaWalletId);
 
   if (!provider) {
-    throw new Error("No Solana wallet found. Install Phantom or a compatible wallet.");
+    throw new Error("Selected Solana wallet is unavailable. Reconnect Backpack, Phantom, or a compatible wallet.");
   }
 
   const connection = getSolanaConnection();
@@ -874,7 +999,10 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expecte
     assertWalletAccount(provider.publicKey?.toBase58(), expectedAccount);
     if (provider.publicKey?.toBase58() !== versionedTransaction.message.staticAccountKeys[0].toBase58())
       throw new Error("Solana wallet changed. Refresh the quote.");
+    let submittedValidity: SolanaSubmission["validity"];
     if (provider.signAndSendTransaction) {
+      // The wallet may rebuild the message before broadcasting. Its returned
+      // signature is authoritative; the original blockhash is not.
       const result = await provider.signAndSendTransaction(versionedTransaction);
 
       if (!result.signature) {
@@ -885,25 +1013,20 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expecte
     } else if (provider.signTransaction) {
       const signedTransaction = await provider.signTransaction(versionedTransaction);
 
-      lastSignature = await connection.sendRawTransaction(signedTransaction.serialize());
+      if (hasBlockhashContext && signedTransaction.message.recentBlockhash === encoded.blockhash) {
+        submittedValidity = { blockhash: encoded.blockhash!, lastValidBlockHeight: encoded.lastValidBlockHeight! };
+      }
+      lastSignature = await connection.sendRawTransaction(signedTransaction.serialize(), { preflightCommitment: "confirmed" });
     } else {
       throw new Error("The connected Solana wallet cannot sign transactions.");
     }
 
-    try {
-      const confirmation = hasBlockhashContext
-        ? await connection.confirmTransaction({
-            signature: lastSignature,
-            blockhash: encoded.blockhash!,
-            lastValidBlockHeight: encoded.lastValidBlockHeight!,
-          }, "confirmed")
-        : await connection.confirmTransaction(lastSignature, "confirmed");
-      if (confirmation.value.err) {
-        throw new Error(`Solana transaction failed: ${JSON.stringify(confirmation.value.err)}`);
-      }
-    } catch (error) {
-      throw Object.assign(new Error(`${error instanceof Error ? error.message : String(error)} Solana transaction ${lastSignature} was submitted; check its status before retrying.`), { transactionHash: lastSignature });
-    }
+    const submission: SolanaSubmission = {
+      signature: lastSignature,
+      validity: submittedValidity,
+    };
+    onSubmitted?.(submission);
+    await confirmSolanaSubmission(connection, submission);
 
     executedSteps += 1;
   }
@@ -915,9 +1038,13 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expecte
   return lastSignature;
 }
 
-export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expectedAccount: string) {
+export function checkSolanaSubmission(submission: SolanaSubmission) {
+  return inspectSolanaSubmission(getSolanaConnection(), submission);
+}
+
+export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expectedAccount: string, walletId?: string) {
   assertExternalPlan(userSteps, "APTOS");
-  const provider = window.aptos;
+  const provider = getAptosWalletProvider(walletId);
 
   if (!provider) {
     throw new Error("No Aptos wallet found. Install Petra or a compatible wallet.");
@@ -1038,9 +1165,9 @@ export async function executeTronUserSteps(userSteps: QuoteUserStep[], expectedA
   return lastHash;
 }
 
-export async function executeStarknetUserSteps(userSteps: QuoteUserStep[], expectedAccount: string) {
+export async function executeStarknetUserSteps(userSteps: QuoteUserStep[], expectedAccount: string, walletId?: string) {
   assertExternalPlan(userSteps, "STARKNET");
-  const provider = window.starknet;
+  const provider = getStarknetWalletProvider(walletId);
 
   if (!provider) {
     throw new Error("No Starknet wallet found. Install Braavos or Argent X.");

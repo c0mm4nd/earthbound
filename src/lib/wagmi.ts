@@ -104,6 +104,7 @@ export function createWagmiConfig(
   return createConfig({
     chains: chainList,
     connectors: [injected()],
+    multiInjectedProviderDiscovery: true,
     ssr: false,
     transports,
   });
