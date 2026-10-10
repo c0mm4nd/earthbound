@@ -1,0 +1,233 @@
+{
+  "tokens": [
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0xABD4C63d2616A5201454168269031355f4764337",
+      "decimals": 18,
+      "symbol": "ORDER",
+      "name": "Orderly Network",
+      "price": {
+        "usd": 0.03601692638070401
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "ABt79MkRXUsoHuV2CVQT32YMXQhTparKFjmidQxgiQ6E",
+      "decimals": 10,
+      "symbol": "ORDER",
+      "name": "Orderly Network",
+      "price": {
+        "usd": 0.03601692638070401
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "optimism",
+      "address": "0x4E200fE2f3eFb977d5fd9c430A41531FB04d97B8",
+      "decimals": 18,
+      "symbol": "ORDER",
+      "name": "Orderly Network",
+      "price": {
+        "usd": 0.03601692638070401
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "base",
+      "address": "0x4E200fE2f3eFb977d5fd9c430A41531FB04d97B8",
+      "decimals": 18,
+      "symbol": "ORDER",
+      "name": "Orderly Network",
+      "price": {
+        "usd": 0.03601692638070401
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "arbitrum",
+      "address": "0x4E200fE2f3eFb977d5fd9c430A41531FB04d97B8",
+      "decimals": 18,
+      "symbol": "ORDER",
+      "name": "Orderly Network",
+      "price": {
+        "usd": 0.03601692638070401
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "abstract",
+      "address": "0x9A4c8cD493CF0Bf8e14BdA5890e3F03A1cDed719",
+      "decimals": 18,
+      "symbol": "ORDER",
+      "name": "Orderly Network",
+      "price": {
+        "usd": 0.03601692638070401
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "polygon",
+      "address": "0x4E200fE2f3eFb977d5fd9c430A41531FB04d97B8",
+      "decimals": 18,
+      "symbol": "ORDER",
+      "name": "Orderly Network",
+      "price": {
+        "usd": 0.03601692638070401
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "avalanche",
+      "address": "0x4E200fE2f3eFb977d5fd9c430A41531FB04d97B8",
+      "decimals": 18,
+      "symbol": "ORDER",
+      "name": "Orderly Network",
+      "price": {
+        "usd": 0.03601692638070401
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "bsc",
+      "address": "0x4E200fE2f3eFb977d5fd9c430A41531FB04d97B8",
+      "decimals": 18,
+      "symbol": "ORDER",
+      "name": "Orderly Network",
+      "price": {
+        "usd": 0.03601692638070401
+      }
+    }
+  ],
+  "chains": [
+    {
+      "name": "Base",
+      "shortName": "Base",
+      "chainKey": "base",
+      "nativeCurrency": {
+        "chainKey": "base",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "ETH",
+        "name": "Ether"
+      },
+      "chainType": "EVM",
+      "chainId": 8453
+    },
+    {
+      "name": "Arbitrum",
+      "shortName": "Arbitrum",
+      "chainKey": "arbitrum",
+      "nativeCurrency": {
+        "chainKey": "arbitrum",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "ETH",
+        "name": "ETH"
+      },
+      "chainType": "EVM",
+      "chainId": 42161
+    },
+    {
+      "name": "Ethereum",
+      "shortName": "Ethereum",
+      "chainKey": "ethereum",
+      "nativeCurrency": {
+        "chainKey": "ethereum",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "ETH",
+        "name": "ETH"
+      },
+      "chainType": "EVM",
+      "chainId": 1
+    },
+    {
+      "name": "BNB Chain",
+      "shortName": "BNB",
+      "chainKey": "bsc",
+      "nativeCurrency": {
+        "chainKey": "bsc",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "BNB",
+        "name": "BNB"
+      },
+      "chainType": "EVM",
+      "chainId": 56
+    },
+    {
+      "name": "Solana",
+      "shortName": "Solana",
+      "chainKey": "solana",
+      "nativeCurrency": {
+        "chainKey": "solana",
+        "address": "So11111111111111111111111111111111111111111",
+        "decimals": 9,
+        "symbol": "SOL",
+        "name": "SOL"
+      },
+      "chainType": "SOLANA",
+      "chainId": 1
+    },
+    {
+      "name": "OP Mainnet",
+      "shortName": "OP Mainnet",
+      "chainKey": "optimism",
+      "nativeCurrency": {
+        "chainKey": "optimism",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "ETH",
+        "name": "ETH"
+      },
+      "chainType": "EVM",
+      "chainId": 10
+    },
+    {
+      "name": "Avalanche",
+      "shortName": "Avalanche",
+      "chainKey": "avalanche",
+      "nativeCurrency": {
+        "chainKey": "avalanche",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "AVAX",
+        "name": "Avalanche Token"
+      },
+      "chainType": "EVM",
+      "chainId": 43114
+    },
+    {
+      "name": "Polygon",
+      "shortName": "Polygon",
+      "chainKey": "polygon",
+      "nativeCurrency": {
+        "chainKey": "polygon",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "MATIC",
+        "name": "MATIC"
+      },
+      "chainType": "EVM",
+      "chainId": 137
+    },
+    {
+      "name": "Abstract",
+      "shortName": "Abstract",
+      "chainKey": "abstract",
+      "nativeCurrency": {
+        "chainKey": "abstract",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "ETH",
+        "name": "ETH"
+      },
+      "chainType": "EVM",
+      "chainId": 2741
+    }
+  ],
+  "solanaHolder": "FLAcC5cQWtiKQunbP81HSCJagmTAMg6gzh84J2Db1WzS",
+  "evmHolder": "0xB49EAe16E45faeBAa406e57C93263A5FCBC0C8d3"
+}

@@ -1,0 +1,684 @@
+{
+  "tokens": [
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",
+      "decimals": 18,
+      "symbol": "USDe",
+      "name": "USDe",
+      "price": {
+        "usd": 0.9994770399275329
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+      "decimals": 9,
+      "symbol": "USDe",
+      "name": "USDE TOKEN",
+      "price": {
+        "usd": 0.9994770399275329
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "sei",
+      "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "decimals": 18,
+      "symbol": "SEI",
+      "name": "SEI",
+      "price": {
+        "usd": 0.06837583456946582
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497",
+      "decimals": 18,
+      "symbol": "sUSDe",
+      "name": "sUSDe",
+      "price": {
+        "usd": 1.2509822561459687
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "72QvBVwpxqmheEPfaCwWSWqEFsUy3rhWt6JhQBMNTwD1",
+      "decimals": 9,
+      "symbol": "ENA",
+      "name": "ENA TOKEN",
+      "price": {
+        "usd": 0.22130759568928676
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0x57e114B691Db790C35207b2e685D4A43181e6061",
+      "decimals": 18,
+      "symbol": "ENA",
+      "name": "ENA",
+      "price": {
+        "usd": 0.22130759568928676
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN",
+      "decimals": 9,
+      "symbol": "sUSDe",
+      "name": "sUSDe",
+      "price": {
+        "usd": 1.2509822561459687
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "6eftxVbSAunVEoxUWdGhPdxg5UdsJ8Wkwy5w5YFuxouw",
+      "decimals": 8,
+      "symbol": "CHZ",
+      "name": "CHZ TOKEN",
+      "price": {
+        "usd": 0.01559202686217511
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "chiliz",
+      "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "decimals": 18,
+      "symbol": "CHZ",
+      "name": "CHZ TOKEN",
+      "price": {
+        "usd": 0.01559202686217511
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0x4d224452801ACEd8B2F0aebE155379bb5D594381",
+      "decimals": 18,
+      "symbol": "APE",
+      "name": "ApeCoin",
+      "price": {
+        "usd": 0.14740001294423752
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ape",
+      "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "decimals": 18,
+      "symbol": "APE",
+      "name": "ApeCoin",
+      "price": {
+        "usd": 0.14740001294423752
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "C1MHyoTJpRTeS9AQCyspNVu2EWAYCZwmJ1jNkEArFP1f",
+      "decimals": 9,
+      "symbol": "APE",
+      "name": "ApeCoin",
+      "price": {
+        "usd": 0.14740001294423752
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0xbdF43ecAdC5ceF51B7D1772F722E40596BC1788B",
+      "decimals": 18,
+      "symbol": "SEI",
+      "name": "SEI",
+      "price": {
+        "usd": 0.06837583456946582
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "5jPMp8GjiCSR7HrnTc3xBLrRCxKHri8BFbmuoFfosBPn",
+      "decimals": 6,
+      "symbol": "SEI",
+      "name": "SEI",
+      "price": {
+        "usd": 0.06837583456946582
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "sonic",
+      "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "decimals": 18,
+      "symbol": "S",
+      "name": "Sonic",
+      "price": {
+        "usd": 0.04009004610260925
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "3rQK45d1ojXR7vtvCmeNjKKVycnVWqaVcP3zk1G39RJR",
+      "decimals": 9,
+      "symbol": "S",
+      "name": "Sonic",
+      "price": {
+        "usd": 0.04009004610260925
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "xdc",
+      "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "decimals": 18,
+      "symbol": "XDC",
+      "name": "XDC",
+      "price": {
+        "usd": 0.03252328411923934
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "4xMFSmmRNgtHq7sT74dsJMQBDAhkuE4U8fWWxaGeDuvj",
+      "decimals": 9,
+      "symbol": "XDC",
+      "name": "XinFin Digital Contract",
+      "price": {
+        "usd": 0.03252328411923934
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0x11A72D2A88468c09f1bb63fC729D8649E84275A9",
+      "decimals": 18,
+      "symbol": "XDC",
+      "name": "XinFin Digital Contract",
+      "price": {
+        "usd": 0.03252328411923934
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "peaq",
+      "address": "0x0000000000000000000000000000000000000809",
+      "decimals": 18,
+      "symbol": "PEAQ",
+      "name": "PEAQ",
+      "price": {
+        "usd": 0.04036126986332012
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "PEAQjk7SRS6rXHVFFmpRr7zrC4g5ZuEebpwTxvaLr3b",
+      "decimals": 9,
+      "symbol": "PEAQ",
+      "name": "PEAQ",
+      "price": {
+        "usd": 0.04036126986332012
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "injectiveevm",
+      "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "decimals": 18,
+      "symbol": "INJ",
+      "name": "INJ TOKEN",
+      "price": {
+        "usd": 7.406526550367224
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "1NJMqVM4PadjuzYmeB7zV7q7DV8oB3ExaQCd9x6KsLz",
+      "decimals": 9,
+      "symbol": "INJ",
+      "name": "INJ TOKEN",
+      "price": {
+        "usd": 7.406526550367224
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "redbelly",
+      "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+      "decimals": 18,
+      "symbol": "RBNT",
+      "name": "Redbelly Network coin",
+      "price": {
+        "usd": 0.002409923334319627
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "solana",
+      "address": "AKbyFYEgueHwS7V4S3gXsWpGJZvv3f7WMkRMFdrenSG1",
+      "decimals": 9,
+      "symbol": "RBNT",
+      "name": "Redbelly Network coin",
+      "price": {
+        "usd": 0.002409923334319627
+      }
+    }
+  ],
+  "chains": [
+    {
+      "name": "Ethereum",
+      "shortName": "Ethereum",
+      "chainKey": "ethereum",
+      "nativeCurrency": {
+        "chainKey": "ethereum",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "ETH",
+        "name": "ETH"
+      },
+      "chainType": "EVM",
+      "chainId": 1
+    },
+    {
+      "name": "Solana",
+      "shortName": "Solana",
+      "chainKey": "solana",
+      "nativeCurrency": {
+        "chainKey": "solana",
+        "address": "So11111111111111111111111111111111111111111",
+        "decimals": 9,
+        "symbol": "SOL",
+        "name": "SOL"
+      },
+      "chainType": "SOLANA",
+      "chainId": 1
+    },
+    {
+      "name": "Sonic",
+      "shortName": "Sonic",
+      "chainKey": "sonic",
+      "nativeCurrency": {
+        "chainKey": "sonic",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "S",
+        "name": "S"
+      },
+      "chainType": "EVM",
+      "chainId": 146
+    },
+    {
+      "name": "SEI",
+      "shortName": "SEI",
+      "chainKey": "sei",
+      "nativeCurrency": {
+        "chainKey": "sei",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "SEI",
+        "name": "SEI"
+      },
+      "chainType": "EVM",
+      "chainId": 1329
+    },
+    {
+      "name": "XDC",
+      "shortName": "XDC",
+      "chainKey": "xdc",
+      "nativeCurrency": {
+        "chainKey": "xdc",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "XDC",
+        "name": "XDC"
+      },
+      "chainType": "EVM",
+      "chainId": 50
+    },
+    {
+      "name": "Ape",
+      "shortName": "Ape",
+      "chainKey": "ape",
+      "nativeCurrency": {
+        "chainKey": "ape",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "APE",
+        "name": "ApeCoin"
+      },
+      "chainType": "EVM",
+      "chainId": 33139
+    },
+    {
+      "name": "Chiliz",
+      "shortName": "Chiliz",
+      "chainKey": "chiliz",
+      "nativeCurrency": {
+        "chainKey": "chiliz",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "CHZ",
+        "name": "CHZ"
+      },
+      "chainType": "EVM",
+      "chainId": 88888
+    },
+    {
+      "name": "Peaq",
+      "shortName": "Peaq",
+      "chainKey": "peaq",
+      "nativeCurrency": {
+        "chainKey": "peaq",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "PEAQ",
+        "name": "PEAQ"
+      },
+      "chainType": "EVM",
+      "chainId": 3338
+    },
+    {
+      "name": "Injective EVM",
+      "shortName": "Injective EVM",
+      "chainKey": "injectiveevm",
+      "nativeCurrency": {
+        "chainKey": "injectiveevm",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "INJ",
+        "name": "INJ"
+      },
+      "chainType": "EVM",
+      "chainId": 1776
+    },
+    {
+      "name": "Redbelly",
+      "shortName": "Redbelly",
+      "chainKey": "redbelly",
+      "nativeCurrency": {
+        "chainKey": "redbelly",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "RBNT",
+        "name": "RBNT"
+      },
+      "chainType": "EVM",
+      "chainId": 151
+    }
+  ],
+  "holders": [
+    {
+      "symbol": "USDe",
+      "address": "9LCvzuwPLEsNiq4MG4Ughs5SXdbvYuzbTqDLH1HgUR9t",
+      "amount": "175170330799535",
+      "owner": "7v3ZVeCrj6FbzVe2TjatMrBkAcVsEVWREsziSZ5LJqx8"
+    },
+    {
+      "symbol": "USDe",
+      "address": "CbcbgaBFSLteoXRP9Hr46JN41VsAQRQH92L9UNDpmaCj",
+      "amount": "116858495339526",
+      "owner": "GoztDsrgFZSw9ovtvVyPxw9i33d4QkDdf7YefUE46zbj"
+    },
+    {
+      "symbol": "USDe",
+      "address": "BufBnEExGoQEanYvsvuwkcjQSdhvGMJtQEBvHpteAa9D",
+      "amount": "100017380864673",
+      "owner": "G9Bx9GZ7HygnpBGJcdJQq9CEFzT18W4Dg68XremFqF2z"
+    },
+    {
+      "symbol": "USDe",
+      "address": "9FL7Rrf667DS1NjQGnRRgV5hQo5EmmCB2QENb6sjfvWu",
+      "amount": "69415777408407",
+      "owner": "Hj8GmLn9Y6v8uSZdjKiRSGyNnDMCo9eA9y72TjqoQdD6"
+    },
+    {
+      "symbol": "USDe",
+      "address": "2FkMDukqPC3Xuoaa8nau95rY4x46Tj3Qb92VyP1J3pao",
+      "amount": "56798480296318",
+      "owner": "DqGzHTQ1TDoD5XP8bhvtZcYM7ndFy1ztSqN1fTyXTJmE"
+    },
+    {
+      "symbol": "USDe",
+      "address": "TzGdSXcX8jW5HqaM4zRRqdtZRZ4PPT6Rpas7Uq7renX",
+      "amount": "51172905155066",
+      "owner": "AJea8NrtXgrYnuf6zEwyZEkVMgUDPgBRUHXnjE9MDZLV"
+    },
+    {
+      "symbol": "USDe",
+      "address": "4N2nhABGpMCrg8aHCR3o7aTsGkgMuM9oBbhXE9g3wFzR",
+      "amount": "29980373283574",
+      "owner": "9ncbc4iV588ofyQ3keMB9esq2coLHbKzFSy26dbEjuNf"
+    },
+    {
+      "symbol": "USDe",
+      "address": "GvLe9Dx9D79BU2orJbcdNGMx58BShtvRRGw6yzjiEKsT",
+      "amount": "21171129137089",
+      "owner": "EcrTxrp3k5XqMRYUDFAZFkVu9aUPupLdhfV6U2A8U1WZ"
+    },
+    {
+      "symbol": "USDe",
+      "address": "EEKkfA5NErBw3Gc11VXm8sqhmfft3ox7Wi8kNgQ8wJdb",
+      "amount": "13428584339239",
+      "owner": "4UjxHz1PyU9DYb4Z8vYUWoRoNj9bEeL57UPS7vkwJuZL"
+    },
+    {
+      "symbol": "USDe",
+      "address": "7Yy49MjC1wM1XzLDrc9d1JrqXid4e9ZitYakwEm1MHgu",
+      "amount": "11635978936405",
+      "owner": "6WCULtNgYAy5yFDQ2uMkpcYXjBADYY9N6vwJL3Dx8Ddk"
+    },
+    {
+      "symbol": "ENA",
+      "address": "ACaEtzFCxauM86VaxSsikAr4kAF5xPrrUJWbuaWvPtAz",
+      "amount": "224995242750739",
+      "owner": "DStPAJcvh6Sav55VBu7pc1s3JiCsP7X4o6UM6eXBxVYM"
+    },
+    {
+      "symbol": "ENA",
+      "address": "BsoR1rySyaA423n2xC6bfFtcEEXYfCuzrjaTGa5bjW2U",
+      "amount": "187656724094589",
+      "owner": "Aut2zKmDDoMVp87iH17XFLTo3ReLpnyNHeJ7EiEy7muZ"
+    },
+    {
+      "symbol": "ENA",
+      "address": "EEstMMSgbtjJr5BJ3QpyaS6JPFjRmj374XYv9ouTqPCe",
+      "amount": "102123410434606",
+      "owner": "GpegpzNjcpbbZA5A1FzG8tFrf7LHuMZER1Pd9K1gndee"
+    },
+    {
+      "symbol": "ENA",
+      "address": "FD26uWm3JVGGjKbZHJS9u3QeXUM8BpWosniM8kWu1L3e",
+      "amount": "79390055359294",
+      "owner": "ByiAbN9MJhfQKGK5WJrfgko6XS88qqERQVRLWZTsvyTf"
+    },
+    {
+      "symbol": "ENA",
+      "address": "Aw7ifnvxCX14PZDJLAEKhCKJ5eTaKwQLq7L5QZL5ZBwG",
+      "amount": "78423403844915",
+      "owner": "E4gsATEg2fjotSPskS2VURafDP7VPhQyoDD6xiA62ZYz"
+    },
+    {
+      "symbol": "ENA",
+      "address": "B5eezSNHQXLzywaTjqpSknynmSvZyU1ZWaXFkQe9apq3",
+      "amount": "64782188428604",
+      "owner": "6U99RdsSjEvk6MsxYXgJYmhDWr8u4YKb7izwXUkiU4FW"
+    },
+    {
+      "symbol": "ENA",
+      "address": "5Gudu6CAnbxZocSzr7qznTbR4TVRTQNE8ty18wA5qrRg",
+      "amount": "57440363394084",
+      "owner": "HSzKBUeWy3Cv4LMf6FZFUUm1N1MZe1UJfkBqtWQGmFx4"
+    },
+    {
+      "symbol": "ENA",
+      "address": "4rRo4wT1mzNaA2Tie1gLS2mNNGeFz4x5H14go5JxjxRA",
+      "amount": "52419989232093",
+      "owner": "F6PB3wnhXC5hvQyWCoR4bYWsHjcwJCne9SYqvCzLmT53"
+    },
+    {
+      "symbol": "ENA",
+      "address": "5Jr2U7EHVAHXMKKDU77LrZ9FSW7Vq3m7WPQU4KVZbVeD",
+      "amount": "45933060529596",
+      "owner": "FTeYdtdPWeqWiDBB8ANsDEVLSQfUTAdJvgoe3yE4cbBZ"
+    },
+    {
+      "symbol": "ENA",
+      "address": "3NzqocGnTr62dtKwzoTw5A5aQyWTsLwAppZR4bnPyXnQ",
+      "amount": "44543620325941",
+      "owner": "JCespKkxhMN5F5uNdohd7G3TXJzVvhr3G98g1SPAntH1"
+    },
+    {
+      "symbol": "ENA",
+      "address": "G615vdMnPfzfFVaaneD4Sjx96x1RpNQgfDJ4iBvGAny4",
+      "amount": "44282588014895",
+      "owner": "6BVs9tTfUtRvzQipmSVGdBVm8dJzA1fK4K6uQ5NBC8TX"
+    },
+    {
+      "symbol": "ENA",
+      "address": "2gPQpgkLzsXPq2B7JgJUfsjYWAZxApx2PpmR6W2R4gCN",
+      "amount": "42441498848259",
+      "owner": "FkaLnX17cXZGyeu3kZGdHCNdFMJJzBrPPYVvd18B3MZp"
+    },
+    {
+      "symbol": "ENA",
+      "address": "FbjcK2TGvWX2mw34pGwWcb6qvfkr3rKqNH8YvacqE4jY",
+      "amount": "41360493410316",
+      "owner": "EnFFY7okLvnMJaZbCJTXgpeERZLrukHLc2hWmqfkRSS7"
+    },
+    {
+      "symbol": "ENA",
+      "address": "9aGv1FD23jGCauLo79sxWagXGCDgaqLy7yXejfZDvN6D",
+      "amount": "40715469763685",
+      "owner": "9VCB1QA34rbLBQuFARAns3c87g9HFnBVkouhCjrwssVV"
+    },
+    {
+      "symbol": "ENA",
+      "address": "CmCvRbBy65ggyLGTkXrsFo1FdMdLWMSfL3f9ZZdb8bxw",
+      "amount": "38514334590000",
+      "owner": "H5cg4FuYV18o2sJif18N9RAsRPp9JhEPaefoBYv3HwC4"
+    },
+    {
+      "symbol": "ENA",
+      "address": "7Fbmm4iNRad8nw3GGDySHH7V65Ga4ZyjvMCDwfxuvKti",
+      "amount": "36266506496055",
+      "owner": "Euy3KHFJEUStMbmeqx77v47risbX8JdUuhQ1Y8YtqT9T"
+    },
+    {
+      "symbol": "ENA",
+      "address": "8okXqBAXk9x8az8ZoVZ6j6kRTya9bfX5cnJz7ZSkMyFi",
+      "amount": "35230179789053",
+      "owner": "CCdx9w7bqYmDWovspT9Zga69yTsLS9MwAhkcpivJLiNn"
+    },
+    {
+      "symbol": "ENA",
+      "address": "GrTh2xqF6UBxuMbvSKcoH5ji8Tfd9p4JDLwgw865LXN9",
+      "amount": "35180721344180",
+      "owner": "5MosL571csxDRkb5QGAuJXsH9NHXVUB3rcq6pZ5a3TFk"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "9Xq5xkZgKTrzLWbNuN7KVTzfMga1viym4BJS5ZgTuBgX",
+      "amount": "39744904550908",
+      "owner": "34F4Wjaf732nfgzLBcCTWhf3uhpVgN4LPepP8KUmYbpZ"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "7bF8tJy8CnAt6PnbGvrTNNTJXLfFFpFtrwo734SUTTeZ",
+      "amount": "4000000000000",
+      "owner": "ANLEydkqLB6y6kG2Z3nMU7Nh4s61LXJCdovRUoGcr4V8"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "8eNo9VPaenRFzSzxGeusuCHFAEKf6NMXo5LcRaDSMhu1",
+      "amount": "3765639803838",
+      "owner": "GsMy9FcDZW4hSTTMKNbPc3Dch4dKSdGD45APJo675CaV"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "EgSJhM3re9iV1hsayUZZ45MPVdvPrrjorve8Gq8Giti9",
+      "amount": "3327528817097",
+      "owner": "BZJEe83iyqyrsJ2pTquMpgPxyzWjro7cBCdfMHEfVucw"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "FT4HLoiu3dohwnZgTbBjsiwDa1s5UJanUMTzog86EtWj",
+      "amount": "2202488336409",
+      "owner": "Fw2kcor4kx1MLUiQpC2jBm1rTo5rgUPS3MPhFbkuatMd"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "A1BBCKYzM4G7FjaMPnafAnzSKwEcHAfEjeZhfCjvrUe8",
+      "amount": "1249750865511",
+      "owner": "6V63mnjbkcdwLrTJpSWvK9tM5wBVwMBWtAqN5GpAJ11M"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "HEM9K76qCBDcjWC9fzBKCJLLR26HHt38cBmzUdXi1Huw",
+      "amount": "1054986316318",
+      "owner": "93EVecMaxGU7DQeVMiwmoaSboEz6ohSLWrkvbnzT8oRn"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "7NymiK5QoPUjwcFwhxUTpngcPoBvRUAnQv5rJEPsgbiR",
+      "amount": "881143654063",
+      "owner": "D1hPAN8jXtopMUyLUKKCK1J9xY6jTYGh8U5Y3pkRGBDA"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "9JcMrSnixudHwPNxiYwRe2VaN2nhmbhHzCa8eFrfXxqn",
+      "amount": "844796018098",
+      "owner": "HZBn9nAQWWcnone3GBhRxbigv7S97a2jAdVuU7fg7Q56"
+    },
+    {
+      "symbol": "sUSDe",
+      "address": "G838dRqTajG9XCc5eUUfjC2FFJYwQB2PXkafRyXE8RPX",
+      "amount": "829177353245",
+      "owner": "CPjSD4rWGEQkRtzzowJuMkar5psVVfJaRSMzYGXuj7xy"
+    },
+    {
+      "symbol": "PEAQ",
+      "owner": "EZFjDBbjcyf12fBgdPazCtiNXGcgLnrYdun1R2GW9gA2"
+    },
+    {
+      "symbol": "S",
+      "owner": "CP1HhGWsBU8YD6fB3XQ1HgQhzC1iGWEXd6D8h9pK6JwM"
+    },
+    {
+      "symbol": "APE",
+      "owner": "4HLFuLebWVC1MzsR5pnMWnqpHib7qe7QHnDaLo8vExkH"
+    },
+    {
+      "symbol": "CHZ",
+      "owner": "BKeNydVr6WUPeUusKueHQN4TtbU9yyrZ2BCH9GduRnj7"
+    },
+    {
+      "symbol": "SEI",
+      "owner": "9Q1gcnSqogxyDDkyUrSuuDavz7aMXhXiBEjvPcYs64Tk"
+    },
+    {
+      "symbol": "XDC",
+      "owner": "7PRAeSDMqUr7izLuqhnWJ2cpcfRanmGR46Um3rBdvDxb"
+    },
+    {
+      "symbol": "INJ",
+      "owner": "Dz2eeBfXFBJdrjtZ66u85wvQFj54ctMset9yWZWrHTjo"
+    },
+    {
+      "symbol": "RBNT",
+      "owner": "3yrrL4u8UEoa2Z4N5Rr5BXUGc1jycMkhEW9paQg1YMWu"
+    }
+  ],
+  "peaqEvmHolder": "0xB82e46c32339D672a41E6EBF89E973a5Ea9c84A2"
+}

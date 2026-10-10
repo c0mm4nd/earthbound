@@ -1,0 +1,222 @@
+{
+  "description": "Public holder and deployment fixtures for read-only TON bidirectional OFT checks. No keys.",
+  "cases": [
+    {
+      "symbol": "USDe",
+      "key": "ethereum",
+      "holder": "0:bdd0d806e62c58ece97748345084011946f054508e9d62c59f9df157c3d7f7fc",
+      "tonOft": "0:23a676145f8dee3632f722aac50392f22cf0b4be8f624e038279a6f5005fb669",
+      "evmOft": "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34",
+      "evmHolder": "0x023fa838682C115c2cFBA96Ef3791CB5Bd931Fc7"
+    },
+    {
+      "symbol": "ENA",
+      "key": "ethereum",
+      "holder": "0:7e7f6aa64d388054f0e6fee8c494f13a20d44703f040950f7ba639974572d10d",
+      "tonOft": "0:0f87d442a6b820e642ae9ad262f2e07b9c529cb4f070b9152ef362604c69b392",
+      "evmOft": "0x58538e6a46e07434d7e7375bc268d3cb839c0133"
+    },
+    {
+      "symbol": "XAUt0",
+      "key": "ethereum",
+      "holder": "0:4ce0266b37ba9e7225aefa83d1e10214bdac3ad56ddc35ca3048988bc8aab726",
+      "tonOft": "0:90d9ff1c7814705fcc74f8b7598476d65f3b9536fc132729b0606f0be82e617f",
+      "evmOft": "0xb9c2321bb7d0db468f570d10a424d1cc8efd696c"
+    },
+    {
+      "symbol": "XAUt0",
+      "key": "arbitrum",
+      "holder": "0:4ce0266b37ba9e7225aefa83d1e10214bdac3ad56ddc35ca3048988bc8aab726",
+      "tonOft": "0:90d9ff1c7814705fcc74f8b7598476d65f3b9536fc132729b0606f0be82e617f",
+      "evmOft": "0xf40542a7b66ad7c68c459ee3679635d2fdb6df39"
+    },
+    {
+      "symbol": "XAUt0",
+      "key": "polygon",
+      "holder": "0:4ce0266b37ba9e7225aefa83d1e10214bdac3ad56ddc35ca3048988bc8aab726",
+      "tonOft": "0:90d9ff1c7814705fcc74f8b7598476d65f3b9536fc132729b0606f0be82e617f",
+      "evmOft": "0x5421cf4288d8007d3c43ac4246eafce5b049e352"
+    },
+    {
+      "symbol": "XAUt0",
+      "key": "avalanche",
+      "holder": "0:4ce0266b37ba9e7225aefa83d1e10214bdac3ad56ddc35ca3048988bc8aab726",
+      "tonOft": "0:90d9ff1c7814705fcc74f8b7598476d65f3b9536fc132729b0606f0be82e617f",
+      "evmOft": "0x7e7866bc840aff9f517a49afdbfc9e7c7aba9a68",
+      "evmHolder": "0x8c2C3117c620571Cb2C34d1e38c150995cDE560B"
+    }
+  ],
+  "chains": [
+    {
+      "name": "Arbitrum",
+      "shortName": "Arbitrum",
+      "chainKey": "arbitrum",
+      "nativeCurrency": {
+        "chainKey": "arbitrum",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "ETH",
+        "name": "ETH"
+      },
+      "chainType": "EVM",
+      "chainId": 42161
+    },
+    {
+      "name": "Ethereum",
+      "shortName": "Ethereum",
+      "chainKey": "ethereum",
+      "nativeCurrency": {
+        "chainKey": "ethereum",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "ETH",
+        "name": "ETH"
+      },
+      "chainType": "EVM",
+      "chainId": 1
+    },
+    {
+      "name": "Avalanche",
+      "shortName": "Avalanche",
+      "chainKey": "avalanche",
+      "nativeCurrency": {
+        "chainKey": "avalanche",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "AVAX",
+        "name": "Avalanche Token"
+      },
+      "chainType": "EVM",
+      "chainId": 43114
+    },
+    {
+      "name": "Polygon",
+      "shortName": "Polygon",
+      "chainKey": "polygon",
+      "nativeCurrency": {
+        "chainKey": "polygon",
+        "address": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+        "decimals": 18,
+        "symbol": "MATIC",
+        "name": "MATIC"
+      },
+      "chainType": "EVM",
+      "chainId": 137
+    },
+    {
+      "name": "TON",
+      "shortName": "TON",
+      "chainKey": "ton",
+      "nativeCurrency": {
+        "chainKey": "ton",
+        "address": "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
+        "decimals": 9,
+        "symbol": "GRAM",
+        "name": "Gram"
+      },
+      "chainType": "TON",
+      "chainId": -239
+    }
+  ],
+  "tokens": [
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",
+      "decimals": 18,
+      "symbol": "USDe",
+      "name": "USDe",
+      "price": {
+        "usd": 0.9994770399275329
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ton",
+      "address": "0x058591596327b4965b25efce4ecce246f504fa3d7c9851d9a20b853de6506e1e",
+      "decimals": 6,
+      "symbol": "ENA",
+      "name": "ENA TOKEN",
+      "price": {
+        "usd": 0.22130759568928676
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0x57e114B691Db790C35207b2e685D4A43181e6061",
+      "decimals": 18,
+      "symbol": "ENA",
+      "name": "ENA",
+      "price": {
+        "usd": 0.22130759568928676
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "polygon",
+      "address": "0xF1815bd50389c46847f0Bda824eC8da914045D14",
+      "decimals": 6,
+      "symbol": "XAUt0",
+      "name": "XAUt0",
+      "price": {
+        "usd": 4131.822974340548
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "arbitrum",
+      "address": "0x40461291347e1eCbb09499F3371D3f17f10d7159",
+      "decimals": 6,
+      "symbol": "XAUt0",
+      "name": "XAUt0",
+      "price": {
+        "usd": 4131.822974340548
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "avalanche",
+      "address": "0x2775d5105276781B4b85bA6eA6a6653bEeD1dd32",
+      "decimals": 6,
+      "symbol": "XAUt0",
+      "name": "XAUt0",
+      "price": {
+        "usd": 4131.822974340548
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ethereum",
+      "address": "0x68749665FF8D2d112Fa859AA293F07A622782F38",
+      "decimals": 6,
+      "symbol": "XAUT",
+      "name": "XAUT",
+      "price": {
+        "usd": 4131.822974340548
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ton",
+      "address": "0x3547f2ee4022c794c80ea354b81bb63b5b571dd05ac091b035d19abbadd74ac6",
+      "decimals": 6,
+      "symbol": "XAUt0",
+      "name": "XAUt0",
+      "price": {
+        "usd": 4131.822974340548
+      }
+    },
+    {
+      "isSupported": true,
+      "chainKey": "ton",
+      "address": "0x086fa2a675f74347b08dd4606a549b8fdb98829cb282bc1949d3b12fbaed9dcc",
+      "decimals": 6,
+      "symbol": "USDe",
+      "name": "USDE TOKEN",
+      "price": {
+        "usd": 0.9994770399275329
+      }
+    }
+  ]
+}
