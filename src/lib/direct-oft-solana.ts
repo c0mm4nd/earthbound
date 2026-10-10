@@ -9,20 +9,21 @@ import {
   ComputeBudgetProgram,
   TransactionMessage,
   VersionedTransaction,
+  SYSVAR_CLOCK_PUBKEY,
 } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
-  ExtensionType,
-  getExtensionTypes,
   getAssociatedTokenAddressSync,
-  getAccountLen,
   unpackMint,
   unpackAccount,
 } from "@solana/spl-token";
 import { hexToBytes, toHex, type Hex } from "viem";
 import type { BridgeToken, LayerZeroOftListDeployment } from "./bridge-types";
 import type { DirectOftAdapter } from "./direct-oft-types";
+import { solanaOftTokenAccountSize } from "./solana-token-extensions";
+import { CONSOLE_OFT_PROGRAM_ID } from "./solana-oft-programs";
+import { verifyOrderlySolana, ORDERLY_SOLANA_MINT } from "./direct-oft-orderly";
 import {
   buildLayerZeroExecutorLzReceiveOption,
   type LayerZeroOftV2SendParam,
@@ -79,6 +80,10 @@ export async function createSolanaOftAdapter(args: {
   const umi = createUmi(rpcUrl);
   const storeKey = new PublicKey(args.storeAddress);
   const storeRaw = await connection.getAccountInfo(storeKey);
+  if (storeRaw && toHex(storeRaw.data.subarray(0, 8)) === "0x32615980630f6b1b") {
+    const { createLegacySolanaOftAdapter } = await import("./direct-oft-solana-legacy");
+    return createLegacySolanaOftAdapter({ ...args, connection, storeKey, storeRaw });
+  }
   if (
     !storeRaw ||
     toHex(storeRaw.data.subarray(0, 8)) !== STORE_DISCRIMINATOR
@@ -93,13 +98,20 @@ export async function createSolanaOftAdapter(args: {
     args.deployment.details.oftProgramId !== programId.toBase58()
   )
     throw new Error("Solana OFT program does not match metadata.");
+  // Program identity selects the account layout; symbols and SDK deserialization
+  // success alone cannot distinguish Console OFT from the standard SDK layout.
+  if (programId.toBase58() === CONSOLE_OFT_PROGRAM_ID) {
+    const { createConsoleOftReceiveAdapter } = await import("./direct-oft-solana-console");
+    return createConsoleOftReceiveAdapter({ ...args, connection, storeKey, storeRaw, rentOptions: solanaRentExtraOptions });
+  }
   const store = oft.accounts
     .getOFTStoreAccountDataSerializer()
     .deserialize(storeRaw.data)[0];
   const program = publicKey(programId.toBase58());
   const pda = new OftPDA(program);
-  if (pda.oftStore(store.tokenEscrow)[0] !== args.storeAddress || store.paused)
-    throw new Error("Solana OFT store is invalid or paused.");
+  if (pda.oftStore(store.tokenEscrow)[0] !== args.storeAddress)
+    throw new Error("Solana OFT store PDA is invalid.");
+  if (store.paused) throw new Error("The issuer has paused this Solana OFT.");
   if (store.tokenMint !== args.token.address)
     throw new Error("Solana OFT mint does not match the selected token.");
   const mintKey = new PublicKey(store.tokenMint);
@@ -126,17 +138,7 @@ export async function createSolanaOftAdapter(args: {
   const tokenProgram = mintRaw.owner;
   const mint = unpackMint(mintKey, mintRaw, tokenProgram);
   if (!mint.isInitialized) throw new Error("Solana mint is not initialized.");
-  // Transfer hooks, transfer fees, and other behavioral extensions need separate handling.
-  const extensions = getExtensionTypes(mint.tlvData);
-  if (
-    extensions.some(
-      (extension) =>
-        ![ExtensionType.MetadataPointer, ExtensionType.TokenMetadata].includes(
-          extension,
-        ),
-    )
-  )
-    throw new Error("This Token-2022 mint uses unsupported extensions.");
+  const tokenAccountSize = solanaOftTokenAccountSize(mint, tokenProgram);
   const peer = oft.accounts
     .getPeerConfigAccountDataSerializer()
     .deserialize(peerRaw.data)[0];
@@ -148,6 +150,18 @@ export async function createSolanaOftAdapter(args: {
   }
   if (rate !== BigInt(1) || exponent > mint.decimals)
     throw new Error("Invalid Solana OFT decimal conversion rate.");
+  const orderly = await verifyOrderlySolana(connection, programId, programRaw);
+  if (orderly && (store.tokenMint !== ORDERLY_SOLANA_MINT || mint.decimals !== 10 || exponent !== 0 ||
+    store.oftType !== oft.types.OFTType.Native || !mint.mintAuthority?.equals(storeKey)))
+    throw new Error("ORDER Solana mint or accounting configuration changed.");
+  const checkOrderlyRate = async (limiter: typeof peer.inboundRateLimiter, amount: bigint) => {
+    if (limiter.__option !== "Some") return;
+    const clock = await connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY);
+    if (!clock || clock.data.length !== 40) throw new Error("Solana chain clock is unavailable.");
+    const now = clock.data.readBigInt64LE(32), limit = limiter.value;
+    const tokens = limit.tokens + (now > limit.lastRefillTime ? now - limit.lastRefillTime : BigInt(0)) * limit.refillPerSecond;
+    if (amount > (tokens < limit.capacity ? tokens : limit.capacity)) throw new Error("Amount exceeds the ORDER Solana rate limit.");
+  };
   const payer = args.from ? publicKey(args.from) : undefined;
   const quoteAccounts = () => {
     if (!payer) throw new Error("Solana source wallet is required.");
@@ -171,6 +185,11 @@ export async function createSolanaOftAdapter(args: {
     tokenAddress: store.tokenMint,
     decimals: mint.decimals,
     sharedDecimals: mint.decimals - exponent,
+    ...(orderly ? { amountEncoding: "orderly-u256" as const, validateReceive: async (_recipient: string, amount: bigint) => {
+      if (amount <= BigInt(0) || mint.supply + amount > (BigInt(1) << BigInt(64)) - BigInt(1))
+        throw new Error("ORDER Solana receive amount exceeds mint supply limits.");
+      await checkOrderlyRate(peer.inboundRateLimiter, amount);
+    } } : {}),
     peer: toHex(peer.peerAddress),
     enforcedOptions: toHex(peer.enforcedOptions.send),
     receiveOptions: async (recipient, enforced) => {
@@ -195,11 +214,8 @@ export async function createSolanaOftAdapter(args: {
           );
         return "0x";
       }
-      const size = tokenProgram.equals(TOKEN_2022_PROGRAM_ID)
-        ? getAccountLen([ExtensionType.ImmutableOwner])
-        : getAccountLen([]);
       const rent = BigInt(
-        await connection.getMinimumBalanceForRentExemption(size),
+        await connection.getMinimumBalanceForRentExemption(tokenAccountSize),
       );
       return solanaRentExtraOptions(rent, enforced);
     },
@@ -210,6 +226,7 @@ export async function createSolanaOftAdapter(args: {
         params(value),
         program,
       );
+      if (orderly) await checkOrderlyRate(peer.outboundRateLimiter, result.oftReceipt.amountReceivedLd);
       return {
         amountSentLD: result.oftReceipt.amountSentLd,
         amountReceivedLD: result.oftReceipt.amountReceivedLd,

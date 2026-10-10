@@ -169,7 +169,7 @@ export interface LayerZeroOftTransferResponse {
 }
 
 export interface LayerZeroOftListDeployment {
-  details?: { oftProgramId?: string; mintAuthority?: string };
+  details?: { oftProgramId?: string; mintAuthority?: string; oftPDA?: string; escrowTokenAccount?: string };
   address: string;
   localDecimals?: number;
   sharedDecimals?: number;

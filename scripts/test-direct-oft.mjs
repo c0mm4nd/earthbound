@@ -10,7 +10,7 @@ function load(name) {
   const source = readFileSync(new URL(`../src/lib/${name}.ts`, import.meta.url), "utf8");
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
   const commonJsModule = { exports: {} };
-  new Script(outputText).runInNewContext({ module: commonJsModule, exports: commonJsModule.exports, require: (id) => id === "./custom-oft" ? load("custom-oft") : require(id) });
+  new Script(outputText).runInNewContext({ module: commonJsModule, exports: commonJsModule.exports, require: (id) => id.startsWith("./") ? load(id.slice(2)) : require(id) });
   return commonJsModule.exports;
 }
 const { buildDirectOftQuote, hasReceiveGas, extractOftCandidates } = load("direct-oft");
@@ -40,6 +40,7 @@ const read = async ({ chain, functionName, args }) => {
     case "approvalRequired": return true;
     case "enforcedOptions": return configuredOptions;
     case "allowance": return allowance;
+    case "balanceOf": return 1000000000n;
     case "quoteOFT": return [{ minAmountLD: 1n, maxAmountLD: amount * 2n }, [], { amountSentLD: amount, amountReceivedLD: receiveAmount }];
     case "quoteSend":
       assert.equal(args[0].minAmountLD, receiveAmount);
@@ -81,7 +82,7 @@ configuredOptions = "0x";
 await assert.rejects(buildDirectOftQuote(args), /receive gas/);
 configuredOptions = buildLayerZeroExecutorLzReceiveOption(65000n);
 await assert.rejects(buildDirectOftQuote({ ...args, dstToken: { ...dstToken, address: addr(7) } }), /No direct OFT mesh/);
-await assert.rejects(buildDirectOftQuote({ ...args, dstChain: { ...dstChain, chainType: "SUI" } }), /EVM/);
+await assert.rejects(buildDirectOftQuote({ ...args, dstChain: { ...dstChain, chainType: "HYPERCORE" } }), /EVM/);
 assert.equal((await buildDirectOftQuote({ ...args, metadata: { TEST: [...metadata.TEST, ...metadata.TEST] } })).dstAmount, "999800");
 const wrongMesh = { ...metadata.TEST[0], deployments: { ...metadata.TEST[0].deployments, ethereum: { address: addr(8), innerTokenAddress: addr(1) } } };
 assert.equal((await buildDirectOftQuote({ ...args, metadata: { TEST: [wrongMesh, ...metadata.TEST] } })).userSteps.at(-1).transaction.encoded.to, addr(3));
@@ -230,3 +231,79 @@ if (process.env.LIVE_USDE_OFT === "1") {
   assert.ok(api.quotes?.length);
   console.log("Stargate USDe quote for 100:", api.quotes[0].dstAmount);
 }
+
+// NativeOFTAdapter uses token() == zero; catalog uses the Eeee sentinel.
+// Amount belongs in msg.value in addition to nativeFee, never in the fee struct.
+const nativeZero = '0x' + '0'.repeat(40), nativeCatalog = '0x' + 'e'.repeat(40);
+const nativeMetadata = { NATIVE: [{ endpointVersion: 'v2', deployments: {
+  ethereum: { address: addr(3), innerTokenAddress: nativeZero },
+  arbitrum: { address: addr(4), innerTokenAddress: addr(2) },
+} }] };
+const nativeRead = async (request) => {
+  const { chain, functionName, args: values } = request;
+  const native = chain.chainKey === 'ethereum';
+  if (functionName === 'token') return native ? nativeZero : addr(2);
+  if (functionName === 'approvalRequired') return false;
+  if (functionName === 'decimals' && native) throw new Error('Native token has no ERC20 decimals');
+  if (functionName === 'quoteOFT') {
+    const rate = native ? 10n ** 12n : 1n;
+    const sent = values[0].amountLD / rate * rate;
+    return [{ minAmountLD: 0n, maxAmountLD: (1n << 256n) - 1n }, [], { amountSentLD: sent, amountReceivedLD: sent }];
+  }
+  if (functionName === 'quoteSend') return { nativeFee: 100n, lzTokenFee: 0n };
+  return read(request);
+};
+const nativeToken = { ...srcToken, address: nativeCatalog };
+const nativeArgs = { ...args, metadata: nativeMetadata, srcToken: nativeToken, amount: amount + 123n, read: nativeRead };
+const nativeQuote = await buildDirectOftQuote(nativeArgs);
+assert.equal(nativeQuote.userSteps.length, 1, 'Native sends must not request ERC20 approval');
+const nativeTx = nativeQuote.userSteps[0].transaction.encoded;
+assert.equal(nativeTx.value, (amount + 100n).toString(), 'Remove dust before adding the messaging fee');
+assert.equal(decodeFunctionData({ abi: layerZeroOftV2Abi, data: nativeTx.data }).args[1].nativeFee, 100n);
+const receiveNativeArgs = { ...nativeArgs, srcChain: dstChain, dstChain: srcChain, srcToken: dstToken, dstToken: nativeToken, amount: 1000000n };
+await assert.rejects(buildDirectOftQuote(receiveNativeArgs), /liquidity cannot be verified/);
+await assert.rejects(buildDirectOftQuote({ ...receiveNativeArgs, readNativeBalance: async () => 0n }), /insufficient liquidity/);
+assert.equal((await buildDirectOftQuote({ ...receiveNativeArgs, readNativeBalance: async () => amount })).dstAmount, amount.toString());
+await assert.rejects(buildDirectOftQuote({ ...nativeArgs, read: r => r.functionName === 'approvalRequired' ? Promise.resolve(true) : nativeRead(r) }), /compatible NativeOFTAdapter/);
+console.log('Native OFT: zero/Eeee identity, no ERC20 calls or approval, dustless principal plus messaging fee, and receive liquidity checks passed.');
+
+const { quoteLegacyNativeOft } = load('direct-oft-native');
+const nativeCodes = JSON.parse(readFileSync(new URL('./fixtures/legacy-native-oft.json', import.meta.url), 'utf8'));
+for (const [chainId, address] of [[146, '0xc2c08bef6c3659018aff49917a8cbe551a1decaa'], [1329, '0xbdf43ecadc5cef51b7d1772f722e40596bc1788b']]) {
+  const req = { chainId, address, decimals: 18, sharedDecimals: 6, params: { amountLD: amount + 123n, minAmountLD: amount }, readCode: async () => nativeCodes[address] };
+  assert.equal((await quoteLegacyNativeOft(req)).amountReceivedLD, amount);
+  assert.equal(await quoteLegacyNativeOft({ ...req, chainId: 1 }), null);
+  assert.equal(await quoteLegacyNativeOft({ ...req, address: addr(99) }), null);
+  assert.equal(await quoteLegacyNativeOft({ ...req, readCode: undefined }), null);
+  assert.equal(await quoteLegacyNativeOft({ ...req, readCode: async () => nativeCodes[address] + '00' }), null, 'Changed runtime cannot inherit the exception');
+  await assert.rejects(quoteLegacyNativeOft({ ...req, sharedDecimals: 8 }), /decimals changed/);
+  await assert.rejects(quoteLegacyNativeOft({ ...req, params: { ...req.params, minAmountLD: amount + 1n } }), /below the minimum/);
+}
+await assert.rejects(buildDirectOftQuote({ ...nativeArgs, read: r => r.functionName === 'quoteOFT' ? Promise.reject(new Error('custom native restriction')) : nativeRead(r), readEvmCode: async () => '0x00' }), /custom native restriction/);
+console.log('Legacy native OFT: verified runtime pinning, dust, slippage and unknown implementation rejection passed.');
+
+// peaq's native balances ERC20 precompile is an identity alias only on 3338.
+const { directOftAddressMatches } = load('direct-oft');
+const peaqPrecompile = '0x0000000000000000000000000000000000000809';
+assert.equal(directOftAddressMatches('EVM', peaqPrecompile, nativeCatalog, 3338), true);
+assert.equal(directOftAddressMatches('EVM', peaqPrecompile, nativeCatalog, 1), false);
+assert.equal(directOftAddressMatches('EVM', peaqPrecompile, nativeCatalog), false);
+const peaqRead = async r => {
+  const source = r.chain.chainKey === 'ethereum';
+  if (r.functionName === 'token' && source) return peaqPrecompile;
+  if (r.functionName === 'decimals' && source) return 18;
+  if (r.functionName === 'approvalRequired') return source;
+  if (r.functionName === 'allowance') return 0n;
+  if (r.functionName === 'balanceOf') return 0n;
+  return nativeRead(r);
+};
+const peaqArgs = { ...nativeArgs, srcChain: { ...srcChain, chainId: 3338 }, read: peaqRead };
+const peaqQuote = await buildDirectOftQuote(peaqArgs);
+assert.equal(peaqQuote.userSteps.length, 2);
+assert.equal(peaqQuote.userSteps[0].transaction.encoded.to, peaqPrecompile);
+assert.equal(decodeFunctionData({ abi: erc20Abi, data: peaqQuote.userSteps[0].transaction.encoded.data }).functionName, 'approve');
+assert.equal(peaqQuote.userSteps[1].transaction.encoded.value, '100', 'Native ERC20 uses transferFrom; msg.value contains only the messaging fee');
+const peaqReverse = { ...peaqArgs, srcChain: dstChain, dstChain: peaqArgs.srcChain, srcToken: dstToken, dstToken: nativeToken, amount: 1000000n };
+await assert.rejects(buildDirectOftQuote(peaqReverse), /escrow has insufficient liquidity/);
+assert.equal((await buildDirectOftQuote({ ...peaqReverse, read: r => r.functionName === 'balanceOf' ? Promise.resolve(amount) : peaqRead(r) })).dstAmount, amount.toString());
+console.log('peaq native ERC20: chain-scoped identity, precompile approval, fee-only msg.value and receive liquidity passed.');

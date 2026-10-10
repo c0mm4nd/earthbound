@@ -26,6 +26,7 @@ function load(name, overrides = {}) {
     atob,
     require: (id) =>
       overrides[id] ??
+      (id === "./direct-oft-solana-discovery" ? { discoverSolanaOftStores: async () => [] } : undefined) ??
       (id.startsWith("./") ? load(id.slice(2), overrides) : require(id)),
   });
   return commonJsModule.exports;
@@ -70,6 +71,7 @@ const metadata = {
   ],
 };
 let destinationChecked = false;
+let destinationAmount;
 let solSend;
 const solAdapter = {
   addressBytes32: toHex(solStore.toBytes()),
@@ -82,6 +84,10 @@ const solAdapter = {
     assert.equal(recipient, solWallet);
     destinationChecked = true;
     return options;
+  },
+  validateReceive: async (recipient, amountLD) => {
+    assert.equal(recipient, solWallet);
+    destinationAmount = amountLD;
   },
   quoteOft: async (p) => ({
     minAmountLD: 1n,
@@ -160,7 +166,13 @@ const forward = await buildDirectOftQuote({
   read,
 });
 assert.equal(destinationChecked, true);
+assert.equal(destinationAmount, 1000000000n);
 assert.equal(forward.dstAmount, "1000000000");
+const validateReceive = solAdapter.validateReceive;
+solAdapter.validateReceive = async () => { throw new Error("Destination receive limit exceeded"); };
+await assert.rejects(buildDirectOftQuote({ metadata, srcChain: evmChain, dstChain: solChain,
+  srcToken: eToken, dstToken: sToken, from: evmWallet, to: solWallet, amount: 10n ** 18n, read }), /Destination receive limit exceeded/);
+solAdapter.validateReceive = validateReceive;
 const calldata = decodeFunctionData({
   abi: layerZeroOftV2Abi,
   data: forward.userSteps[0].transaction.encoded.data,
@@ -183,6 +195,31 @@ assert.equal(reverse.directOft.nativeFee, "777");
 assert.equal(reverse.fees[0].symbol, "SOL");
 assert.equal(solSend.to, `0x${evmWallet.slice(2).padStart(64, "0")}`);
 assert.equal(reverse.userSteps[0].chainType, "SOLANA");
+const discoveryRead = (params) => {
+  if (params.address.toLowerCase() === evmToken.toLowerCase() && params.functionName === "token") throw new Error("Token is not the OFT adapter");
+  return read(params);
+};
+const discoveryArgs = { metadata: {}, discoverPeers: true, srcChain: evmChain, dstChain: solChain, srcToken: eToken, dstToken: sToken,
+  from: evmWallet, to: solWallet, amount: 10n ** 18n, read: discoveryRead,
+  fetchDiscoveryQuote: async () => ({ quotes: [{ userSteps: forward.userSteps }] }),
+};
+const discoveredSolana = await buildDirectOftQuote(discoveryArgs);
+assert.equal(discoveredSolana.dstAmount, forward.dstAmount);
+assert.equal(discoveredSolana.userSteps.at(-1).transaction.encoded.to, evmOft);
+solAdapter.peer = `0x${"00".repeat(32)}`;
+await assert.rejects(buildDirectOftQuote(discoveryArgs), /No direct OFT mesh/);
+solAdapter.peer = evmBytes;
+const { buildDirectOftQuote: buildConsoleQuote } = load("direct-oft", {
+  "./direct-oft-solana": { createSolanaOftAdapter: async () => solAdapter },
+  "./direct-oft-solana-discovery": { discoverSolanaOftStores: async () => [solStore.toBase58()] },
+});
+const consoleArgs = { ...discoveryArgs, srcChain: solChain, dstChain: evmChain, srcToken: sToken, dstToken: eToken,
+  from: solWallet, to: evmWallet, amount: 10n ** 9n,
+  fetchDiscoveryQuote: async () => { throw new Error("Unexpected API call"); } };
+assert.equal((await buildConsoleQuote(consoleArgs)).dstAmount, reverse.dstAmount);
+await assert.rejects(buildConsoleQuote({ ...consoleArgs, read: (p) => p.functionName === "token" ? Promise.resolve(evmWallet) : discoveryRead(p) }), /destination token/);
+await assert.rejects(buildConsoleQuote({ ...consoleArgs, read: (p) => p.functionName === "peers" ? Promise.resolve('0x' + '00'.repeat(32)) : discoveryRead(p) }), /reverse peer/);
+console.log("Solana discovery: verified API hints, mint-authority source discovery, reciprocal peers, token identity and fresh direct quotes passed.");
 solAdapter.peer = `0x${"00".repeat(32)}`;
 await assert.rejects(
   buildDirectOftQuote({
@@ -239,7 +276,7 @@ if (process.env.LIVE_SOLANA_OFT === "1") {
     from: evmWallet,
     to: solWallet,
     amount: 10n ** 18n,
-    solanaRpcUrl: process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com",
+    solanaRpcUrl: process.env.SOLANA_RPC_URL,
     read: ({ address, abi, functionName, args }) =>
       client.readContract({ address, abi, functionName, args }),
   });
@@ -280,7 +317,7 @@ if (process.env.LIVE_SOLANA_OFT === "1") {
     to: evmWallet,
     amount: 1000000000n,
     simulate: true,
-    solanaRpcUrl: process.env.SOLANA_RPC_URL ?? "https://api.mainnet-beta.solana.com",
+    solanaRpcUrl: process.env.SOLANA_RPC_URL,
     read: ({ address, abi, functionName, args }) =>
       client.readContract({ address, abi, functionName, args }),
   });

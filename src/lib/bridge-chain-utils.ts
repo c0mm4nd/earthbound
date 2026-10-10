@@ -1,3 +1,5 @@
+import { stellarAddressBytes32 } from "./stellar-address";
+import { tonAccount } from "./direct-oft-address";
 import { PublicKey } from "@solana/web3.js";
 import { isAddress } from "viem";
 import type { BridgeApiProvider, BridgeChain, BridgeChainType } from "@/lib/bridge-types";
@@ -5,8 +7,6 @@ import type { BridgeApiProvider, BridgeChain, BridgeChainType } from "@/lib/brid
 const TRON_BASE58_ADDRESS_PATTERN = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
 const TRON_HEX_ADDRESS_PATTERN = /^41[a-fA-F0-9]{40}$/;
 const HEX_ACCOUNT_PATTERN = /^0x[a-fA-F0-9]{1,64}$/;
-const TON_RAW_ADDRESS_PATTERN = /^-?\d+:[a-fA-F0-9]{64}$/;
-const TON_USER_FRIENDLY_ADDRESS_PATTERN = /^(EQ|UQ|kQ|0Q)[A-Za-z0-9_-]{46,62}$/;
 
 export function isEvmChainType(chainType?: BridgeChainType | null) {
   return chainType === "EVM";
@@ -62,6 +62,8 @@ export function getChainTypeDisplayLabel(chainType?: BridgeChainType | null) {
       return "Starknet";
     case "TON":
       return "TON";
+    case "STELLAR":
+      return "Stellar";
     case "SUI":
       return "Sui";
     case "IOTAMOVE":
@@ -83,6 +85,8 @@ export function getWalletConnectLabel(chainType?: BridgeChainType | null) {
       return "Connect Starknet Wallet";
     case "TON":
       return "Connect TON Wallet";
+    case "STELLAR":
+      return "Connect Stellar Wallet";
     case "SUI":
       return "Connect Sui Wallet";
     case "IOTAMOVE":
@@ -104,6 +108,8 @@ export function getDestinationAddressPlaceholder(chainType?: BridgeChainType | n
       return "0x...";
     case "TON":
       return "EQ...";
+    case "STELLAR":
+      return "G... or deployed C...";
     case "SUI":
     case "IOTAMOVE":
       return "0x...";
@@ -123,7 +129,9 @@ export function getAddressValidationCopy(chainType?: BridgeChainType | null) {
     case "STARKNET":
       return "Enter a valid Starknet address.";
     case "TON":
-      return "Enter a valid TON address.";
+      return "Enter a valid TON mainnet basechain address.";
+    case "STELLAR":
+      return "Enter a valid Stellar G account or deployed C contract address.";
     case "SUI":
       return "Enter a valid Sui address.";
     case "IOTAMOVE":
@@ -144,6 +152,8 @@ export function validateAddressForChainType(
   }
 
   switch (chainType) {
+    case "STELLAR":
+      try { stellarAddressBytes32(normalizedAddress); return true; } catch { return false; }
     case "SOLANA":
       try {
         return new PublicKey(normalizedAddress).toBase58() === normalizedAddress;
@@ -161,10 +171,7 @@ export function validateAddressForChainType(
         TRON_HEX_ADDRESS_PATTERN.test(normalizedAddress)
       );
     case "TON":
-      return (
-        TON_RAW_ADDRESS_PATTERN.test(normalizedAddress) ||
-        TON_USER_FRIENDLY_ADDRESS_PATTERN.test(normalizedAddress)
-      );
+      try { tonAccount(normalizedAddress); return true; } catch { return false; }
     default:
       return isAddress(normalizedAddress);
   }

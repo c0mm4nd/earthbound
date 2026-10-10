@@ -1,13 +1,13 @@
 export type RpcConfig = Record<string, string[]>;
 
-// Verified dRPC public endpoints. Networks without a working public endpoint
-// retain their official RPC until a custom dRPC endpoint is configured.
+// Public RPC defaults. Solana's official public endpoint rejects browser-origin
+// requests with 403, so use the PublicNode endpoint verified from the deployed app.
 export const DEFAULT_RPC_URLS: Record<string, string[]> = {
   ethereum: ["https://eth.drpc.org"],
   arbitrum: ["https://arbitrum.drpc.org"],
-  base: ["https://base.drpc.org"],
+  base: ["https://base-rpc.publicnode.com", "https://mainnet.base.org", "https://base.drpc.org"],
   optimism: ["https://optimism.drpc.org"],
-  bsc: ["https://bsc.drpc.org"],
+  bsc: ["https://bsc-rpc.publicnode.com", "https://bsc.drpc.org"],
   avalanche: ["https://avalanche.drpc.org"],
   polygon: ["https://polygon.drpc.org"],
   linea: ["https://linea.drpc.org"],
@@ -23,7 +23,7 @@ export const DEFAULT_RPC_URLS: Record<string, string[]> = {
   soneium: ["https://soneium.drpc.org"],
   worldchain: ["https://worldchain.drpc.org"],
   zircuit: ["https://mainnet.zircuit.com"],
-  solana: ["https://api.mainnet-beta.solana.com"],
+  solana: ["https://solana-rpc.publicnode.com"],
   sui: ["https://fullnode.mainnet.sui.io:443"],
   iota: ["https://api.mainnet.iota.cafe"],
 };

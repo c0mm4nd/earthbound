@@ -17,9 +17,11 @@ export interface DirectOftAdapter {
   tokenAddress: string;
   decimals: number;
   sharedDecimals: number;
+  amountEncoding?: "orderly-u256";
   peer: Hex;
   enforcedOptions: Hex;
   receiveOptions?: (recipient: string, enforcedOptions: Hex) => Promise<Hex>;
+  validateReceive?: (recipient: string, amountLD: bigint) => Promise<void>;
   quoteOft: (params: LayerZeroOftV2SendParam) => Promise<DirectOftReceipt>;
   quoteSend: (
     params: LayerZeroOftV2SendParam,
