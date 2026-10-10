@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
       const message =
         (provider === "stargate-v2" &&
         (data?.code === "UNSUPPORTED_ROUTE" || data?.message === "Unsupported route")
-          ? "This route is not supported by Stargate v2 fallback. Add a LayerZero API key and retry Direct API."
+          ? "This route is not supported by the default API. Add a LayerZero API key and retry Direct API."
           : null) ||
         (typeof data?.message === "string" && data.message) ||
         (typeof data?.error === "string" && data.error) ||

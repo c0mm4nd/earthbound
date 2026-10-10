@@ -10,11 +10,11 @@ import {
 import { walletChainByKey } from "@/lib/wagmi";
 
 const FIELD_CLASS =
-  "w-full rounded-[1.25rem] border border-white/10 bg-black px-4 py-3 text-sm text-white outline-none transition placeholder:text-white/35 focus:border-white/28 font-mono";
+  "w-full rounded-[1.25rem] border border-white/10 bg-black px-3 py-2 text-xs text-white outline-none transition placeholder:text-white/35 focus:border-white/28 font-mono";
 const GHOST_BUTTON_CLASS =
-  "inline-flex items-center justify-center rounded-full border border-white/12 bg-white/[0.04] px-5 py-3 text-sm font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex items-center justify-center rounded-full border border-white/12 bg-white/[0.04] h-9 px-3 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50";
 const PRIMARY_BUTTON_CLASS =
-  "inline-flex items-center justify-center rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex items-center justify-center rounded-full bg-white h-9 px-3 text-xs font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50";
 const ICON_BUTTON_CLASS =
   "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white";
 
@@ -108,7 +108,7 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-[1.6rem] border border-white/12 bg-[var(--panel)] shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+      <div className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         {/* Header */}
         <div className="flex items-start justify-between gap-4 p-5 pb-4">
           <div>

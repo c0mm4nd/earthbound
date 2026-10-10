@@ -66,9 +66,9 @@ import {
 } from "@/lib/bridge-chain-utils";
 import { assertExecutionPlan, assertSuccessfulEvmReceipt } from "@/lib/execution-safety";
 import { buildCustomOftQuote } from "@/lib/custom-oft-quote";
-import { buildDirectOftQuote } from "@/lib/direct-oft";
+import { buildDirectOftQuote, supportsDirectOftRoute } from "@/lib/direct-oft";
 import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
-import { fetchExternalWalletBalance } from "@/lib/bridge-wallets";
+import { checkSolanaSubmission, fetchExternalWalletBalance } from "@/lib/bridge-wallets";
 import {
   isLocalCustomOftDestinationChainSupported,
   isLocalCustomOftSourceChainSupported,
@@ -76,6 +76,7 @@ import {
 } from "@/lib/custom-oft";
 import {
   fetchInjectedEvmBalance,
+  getConnectorEvmProvider,
   switchInjectedEvmChain,
 } from "@/lib/injected-evm";
 import {
@@ -84,6 +85,13 @@ import {
 } from "@/lib/wagmi";
 import { useRpcConfig } from "@/components/providers";
 import { RpcSettingsModal } from "@/components/rpc-settings-modal";
+import { WalletManagerModal } from "@/components/wallet-manager-modal";
+import { ToggleSwitch } from "@/components/toggle-switch";
+import { WALLET_NETWORKS, type WalletNetwork } from "@/lib/wallet-options";
+
+import { SolanaConfirmationError } from "@/lib/solana-confirmation";
+
+import { EXECUTION_HISTORY_KEY, loadExecutionHistory, mergeExecutionHistory, parseExecutionHistory, recoverExecutionHistory, type ExecutionHistoryItem } from "@/lib/execution-history";
 
 const NATIVE_TOKEN_ADDRESS = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const TRANSFER_TERMINAL_STATUSES = new Set([
@@ -108,15 +116,15 @@ const GITHUB_REPOSITORY_URL = "https://github.com/c0mm4nd/earthbound";
 const SURFACE_CARD_CLASS =
   "rounded-[1.75rem] border border-white/10 bg-[var(--surface-strong)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] sm:p-5";
 const FIELD_CLASS =
-  "w-full rounded-[1.25rem] border border-white/10 bg-black px-4 py-3 text-sm text-white outline-none transition placeholder:text-white/35 focus:border-white/28";
+  "w-full rounded-[1.25rem] border border-white/10 bg-black px-3 py-2 text-xs text-white outline-none transition placeholder:text-white/35 focus:border-white/28";
 const GHOST_BUTTON_CLASS =
-  "inline-flex items-center justify-center rounded-full border border-white/12 bg-white/[0.04] px-5 py-3 text-sm font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex items-center justify-center rounded-full border border-white/12 bg-white/[0.04] h-9 px-3 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50";
 const PRIMARY_BUTTON_CLASS =
-  "inline-flex items-center justify-center rounded-full bg-white px-6 py-3 text-sm font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex items-center justify-center rounded-full bg-white h-9 px-3 text-xs font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50";
 const ICON_BUTTON_CLASS =
   "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.04] text-white/76 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white";
 
-type ExecutionPhase = "idle" | "running" | "success" | "error";
+type ExecutionPhase = "idle" | "running" | "pending" | "success" | "error";
 
 type ExecutionState = {
   phase: ExecutionPhase;
@@ -136,31 +144,7 @@ type ExecutionNotification = {
   persistent?: boolean;
 };
 
-type ExecutionHistoryItem = {
-  id: string;
-  quoteId: string;
-  phase: Exclude<ExecutionPhase, "idle">;
-  createdAt: number;
-  updatedAt: number;
-  routeLabel: string;
-  srcChainName: string;
-  dstChainName: string;
-  srcChainIconUrl?: string;
-  dstChainIconUrl?: string;
-  srcTokenSymbol: string;
-  dstTokenSymbol: string;
-  srcTokenIconUrl?: string;
-  dstTokenIconUrl?: string;
-  srcAmount: string;
-  expectedDstAmount: string;
-  minimumDstAmount?: string | null;
-  destinationAddress: string;
-  currentStep?: string;
-  transferStatus?: string;
-  txHash?: string;
-  explorerUrl?: string;
-  error?: string;
-};
+
 
 type TokenDisplaySource = "stargate" | "layerzero";
 
@@ -258,10 +242,26 @@ function shortenAddress(address?: string) {
 }
 
 function formatTransferStatus(status: string) {
-  return status
-    .replace(/_/g, " ")
-    .toLowerCase()
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+  const labels: Record<string, string> = {
+    SOURCE_CONFIRMED: "Source confirmed",
+    SUBMITTED: "Confirming transaction",
+    CONFIRMATION_PENDING: "Awaiting confirmation",
+    COMPLETED: "Transfer completed",
+    DELIVERED: "Transfer completed",
+    SUCCEEDED: "Transfer completed",
+    FAILED: "Transfer failed",
+    ERROR: "Transfer failed",
+    CANCELLED: "Transfer cancelled",
+    EXPIRED: "Transaction expired",
+    UNKNOWN: "Status unavailable",
+    PENDING: "Transfer pending",
+    INFLIGHT: "Transfer in progress",
+  };
+  return labels[status] ?? status.replace(/[_-]+/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase());
+}
+
+function formatExecutionCopy(value: string) {
+  return value.replace(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g, formatTransferStatus);
 }
 
 function formatTimeLabel(timestamp: number) {
@@ -1197,11 +1197,11 @@ function getQuoteRouteKey(quote: BridgeQuote) {
 
 function formatRouteType(type: string) {
   const labels: Record<string, string> = {
-    DIRECT_OFT: "Direct OFT · no Stargate product fee",
-    STARGATE_V2_TAXI: "Stargate Fast",
-    STARGATE_V2_BUS: "Stargate Economy",
-    STARGATE_V1: "Stargate V1",
-    STARGATE_V2_HYPERCORE: "Stargate HyperCore",
+    DIRECT_OFT: "Direct transfer",
+    STARGATE_V2_TAXI: "Fast transfer",
+    STARGATE_V2_BUS: "Economy transfer",
+    STARGATE_V1: "Standard transfer",
+    STARGATE_V2_HYPERCORE: "HyperCore transfer",
     OFT_V1: "OFT V1",
     OFT_V2: "OFT V2",
     OFT_V2_MULTIHOP: "OFT Multihop",
@@ -1224,6 +1224,15 @@ function formatRouteType(type: string) {
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(" ")
   );
+}
+
+function formatHistoryRouteLabel(label: string) {
+  return label
+    .replace(/Direct OFT · no Stargate product fee/g, "Direct transfer")
+    .replace(/Stargate Fast/g, "Fast transfer")
+    .replace(/Stargate Economy/g, "Economy transfer")
+    .replace(/Stargate V1/g, "Standard transfer")
+    .replace(/Stargate HyperCore/g, "HyperCore transfer");
 }
 
 function formatQuoteRouteLabel(quote: BridgeQuote) {
@@ -1415,6 +1424,7 @@ function getExecutionTone(phase: ExecutionPhase) {
 }
 
 function getExecutionPhaseLabel(phase: ExecutionPhase) {
+  if (phase === "pending") return "Pending";
   if (phase === "running") {
     return "Running";
   }
@@ -1431,7 +1441,7 @@ function getExecutionPhaseLabel(phase: ExecutionPhase) {
 }
 
 function getExecutionHistoryStatus(item: ExecutionHistoryItem) {
-  return item.transferStatus ?? getExecutionPhaseLabel(item.phase);
+  return item.transferStatus ? formatTransferStatus(item.transferStatus) : getExecutionPhaseLabel(item.phase);
 }
 
 function StatusPill({
@@ -1450,7 +1460,7 @@ function StatusPill({
 
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] ${toneClasses}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${toneClasses}`}
     >
       {children}
     </span>
@@ -1754,16 +1764,11 @@ function InlineOptionList({
   const showBlockingLoader = Boolean(loadingLabel && !items.length && !normalizedQuery);
 
   return (
-    <div className="flex min-h-0 flex-col gap-2">
+    <div className="wallet-option-list flex min-h-0 min-w-0 flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
         <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
           {title}
         </p>
-        {items.length ? (
-          <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--muted)]">
-            {items.length}
-          </p>
-        ) : null}
       </div>
 
       <input
@@ -1851,7 +1856,7 @@ function LayerZeroApiKeyModal({
 }) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-[1.6rem] border border-white/12 bg-[var(--panel)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+      <div className="w-full max-w-md rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
@@ -1862,7 +1867,7 @@ function LayerZeroApiKeyModal({
             </h2>
             <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
               Enter your LayerZero Transfer API key before switching to Direct API mode. Leave it
-              blank to continue with Stargate v2 fallback. The key is stored only in this browser.
+              blank to use the default API routes. The key is stored only in this browser.
             </p>
           </div>
 
@@ -1926,7 +1931,7 @@ function CustomOftConfigModal({
 }) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-4xl rounded-[1.6rem] border border-white/12 bg-[var(--panel)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+      <div className="w-full max-w-4xl rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
@@ -2104,7 +2109,7 @@ function OftDiscoveryModal({
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
-      <div className="flex h-[min(52rem,calc(100vh-2rem))] w-full max-w-4xl flex-col rounded-[1.6rem] border border-white/12 bg-[var(--panel)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+      <div className="flex h-[min(52rem,calc(100vh-2rem))] w-full max-w-4xl flex-col rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
@@ -2242,7 +2247,7 @@ function OftDiscoveryModal({
                               ? ` · inner ${shortenAddress(deployment.innerTokenAddress)}`
                               : ""}
                             {deployment.approvalRequired ? " · approval" : ""}
-                            {deployment.type ? ` · ${deployment.type}` : ""}
+                            {deployment.type ? ` · ${formatRouteType(deployment.type)}` : ""}
                           </p>
                         </div>
                       ))}
@@ -2287,7 +2292,7 @@ function CustomOftSetupModal({
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-lg rounded-[1.6rem] border border-white/12 bg-[var(--panel)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+      <div className="w-full max-w-lg rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
@@ -2407,9 +2412,11 @@ export function BridgeApp() {
   const [useApiRoutes, setUseApiRoutes] = useState(false);
   const { wagmiConfig, rpcConfig, updateBridgeEvmChains } = useRpcConfig();
   const [isRpcSettingsOpen, setIsRpcSettingsOpen] = useState(false);
-  const { address, chainId, isConnected } = useAccount();
-  const { connect, connectors, isPending: isConnectPending } = useConnect();
-  const { disconnect } = useDisconnect();
+  const [isWalletManagerOpen, setIsWalletManagerOpen] = useState(false);
+  const [walletManagerNetwork, setWalletManagerNetwork] = useState<WalletNetwork>("EVM");
+  const { address, chainId, isConnected, connector: evmConnector } = useAccount();
+  const { connectAsync, connectors, isPending: isConnectPending } = useConnect();
+  const { disconnectAsync } = useDisconnect();
   const { switchChainAsync, isPending: isSwitchPending } = useSwitchChain();
   const bridgeWallets = useBridgeWallets();
   const router = useRouter();
@@ -2426,7 +2433,7 @@ export function BridgeApp() {
   const [dstChainKey, setDstChainKey] = useState("");
   const [srcTokenAddress, setSrcTokenAddress] = useState("");
   const [dstTokenAddress, setDstTokenAddress] = useState("");
-  const [destinationAddress, setDestinationAddress] = useState("");
+  const [thirdPartyRecipient, setThirdPartyRecipient] = useState<{ chainKey: string; address: string } | null>(null);
   const [amountInput, setAmountInput] = useState("");
   const [quotes, setQuotes] = useState<BridgeQuote[]>([]);
   const [quotedRequestKey, setQuotedRequestKey] = useState("");
@@ -2438,6 +2445,29 @@ export function BridgeApp() {
     phase: "idle",
   });
   const [executionHistory, setExecutionHistory] = useState<ExecutionHistoryItem[]>([]);
+  const executionHistoryRef = useRef<ExecutionHistoryItem[]>([]);
+  const [historyStorageError, setHistoryStorageError] = useState(false);
+  const [checkingHistoryId, setCheckingHistoryId] = useState<string | null>(null);
+  useEffect(() => {
+    let saved: ExecutionHistoryItem[] = [];
+    try {
+      saved = loadExecutionHistory(localStorage, sessionStorage);
+    } catch {
+      setHistoryStorageError(true);
+      // A failed migration write must not hide either copy of existing history.
+      try { saved = parseExecutionHistory(localStorage.getItem(EXECUTION_HISTORY_KEY)); } catch { /* Durable storage is inaccessible. */ }
+      try { saved = mergeExecutionHistory(saved, parseExecutionHistory(sessionStorage.getItem(EXECUTION_HISTORY_KEY))); } catch { /* No accessible storage. */ }
+    }
+    executionHistoryRef.current = recoverExecutionHistory(saved);
+    setExecutionHistory(executionHistoryRef.current);
+    const syncHistory = (event: StorageEvent) => {
+      if (event.key !== EXECUTION_HISTORY_KEY || event.storageArea !== localStorage) return;
+      executionHistoryRef.current = mergeExecutionHistory(executionHistoryRef.current, parseExecutionHistory(event.newValue));
+      setExecutionHistory(executionHistoryRef.current);
+    };
+    window.addEventListener("storage", syncHistory);
+    return () => window.removeEventListener("storage", syncHistory);
+  }, []);
   const [executionNotifications, setExecutionNotifications] = useState<
     ExecutionNotification[]
   >([]);
@@ -2463,7 +2493,6 @@ export function BridgeApp() {
   >();
   const [isExternalWalletBalanceLoading, setIsExternalWalletBalanceLoading] = useState(false);
   const customOftImportInputRef = useRef<HTMLInputElement | null>(null);
-  const prevPreferredDestinationAddressRef = useRef<string>("");
   const skipDstTokenResetRef = useRef(false);
   const balanceSwitchAttemptRef = useRef<string | null>(null);
   const notificationTimeoutsRef = useRef(new Map<string, number>());
@@ -2473,8 +2502,9 @@ export function BridgeApp() {
     (mode?: "auto" | "manual" | "refresh") => Promise<void>
   >(async () => undefined);
 
-  const injectedConnector =
-    connectors.find((connector) => connector.type === "injected") ?? connectors[0];
+  const evmWalletConnectors = connectors.filter((connector) =>
+    connector.id !== "injected" || (connectors.length === 1 && typeof window !== "undefined" && Boolean(window.ethereum)),
+  );
 
   const chainsQuery = useQuery({
     queryKey: ["bridge", "chains"],
@@ -2783,7 +2813,7 @@ export function BridgeApp() {
     : (activeExternalWalletSession?.address ?? "");
   const preferredDestinationWalletAddress =
     destinationChainType === "EVM"
-      ? (address ?? "")
+      ? (isConnected ? address ?? "" : "")
       : (destinationExternalWalletSession?.address ?? "");
   const sourceWalletConnected = sourceChainUsesEvmWallet
     ? Boolean(address && isConnected)
@@ -2800,6 +2830,15 @@ export function BridgeApp() {
     preferredDestinationWalletAddress &&
       validateAddressForChainType(destinationChainType, preferredDestinationWalletAddress),
   );
+
+  const useThirdPartyRecipient = Boolean(activeDstChain && thirdPartyRecipient?.chainKey === activeDstChain.chainKey);
+  const destinationAddress = useThirdPartyRecipient
+    ? thirdPartyRecipient!.address
+    : hasPreferredDestinationWalletAddress ? preferredDestinationWalletAddress : "";
+  const destinationWalletNetwork = WALLET_NETWORKS.find((network) => network.type === destinationChainType)?.type;
+  const destinationRecipientCopy = !useThirdPartyRecipient && !hasPreferredDestinationWalletAddress
+    ? `Connect a ${getChainTypeDisplayLabel(destinationChainType)} destination wallet or explicitly choose a third-party address.`
+    : destinationAddressValidationCopy;
 
   const srcChainItems = useMemo<InlineOptionItem[]>(
     () =>
@@ -3086,7 +3125,7 @@ export function BridgeApp() {
     if (!destinationAddress || !validateAddressForChainType(destinationChainType, destinationAddress)) {
       return {
         ready: false,
-        reason: destinationAddressValidationCopy,
+        reason: destinationRecipientCopy,
       } as const;
     }
 
@@ -3131,7 +3170,7 @@ export function BridgeApp() {
   }, [
     amountInput,
     bridgeApiProvider,
-    destinationAddressValidationCopy,
+    destinationRecipientCopy,
     destinationChainType,
     destinationAddress,
     dstChain,
@@ -3230,12 +3269,13 @@ export function BridgeApp() {
     let isCancelled = false;
     setIsFallbackEvmBalanceLoading(true);
 
-    void fetchInjectedEvmBalance({
+    void getConnectorEvmProvider(evmConnector).then((provider) => fetchInjectedEvmBalance({
+      provider,
       account: address as Address,
       tokenAddress: isNativeToken(activeBalanceToken.address)
         ? null
         : (activeBalanceToken.address as Address),
-    })
+    }))
       .then((value) => {
         if (isCancelled) {
           return;
@@ -3261,7 +3301,7 @@ export function BridgeApp() {
     return () => {
       isCancelled = true;
     };
-  }, [activeBalanceToken, address, balanceEnabled, sourceChainHasConfiguredWallet]);
+  }, [activeBalanceToken, address, balanceEnabled, sourceChainHasConfiguredWallet, evmConnector]);
 
   useEffect(() => {
     if (
@@ -3380,7 +3420,7 @@ export function BridgeApp() {
       return;
     }
 
-    await switchInjectedEvmChain(chain.chainId, chain.shortName);
+    await switchInjectedEvmChain(chain.chainId, chain.shortName, await getConnectorEvmProvider(evmConnector));
   }
 
   async function readEvmContractForChain<T>({
@@ -3504,7 +3544,7 @@ export function BridgeApp() {
       persistent,
     };
 
-    setExecutionNotifications((current) => [...current, nextNotification].slice(-4));
+    setExecutionNotifications((current) => [...current.filter((item) => item.title !== title || item.message !== message), nextNotification].slice(-2));
 
     if (!persistent) {
       const timeoutId = window.setTimeout(() => {
@@ -3520,25 +3560,44 @@ export function BridgeApp() {
     return notificationId;
   }
 
+  function commitExecutionHistory(update: (items: ExecutionHistoryItem[]) => ExecutionHistoryItem[]) {
+    let current = executionHistoryRef.current;
+    try { current = mergeExecutionHistory(parseExecutionHistory(localStorage.getItem(EXECUTION_HISTORY_KEY)), current); } catch { /* Retain in-memory history. */ }
+    const next = mergeExecutionHistory(update(current));
+    // Persist synchronously at each submission/status update, before a reload can interrupt React effects.
+    try {
+      localStorage.setItem(EXECUTION_HISTORY_KEY, JSON.stringify(next));
+      setHistoryStorageError(false);
+    } catch { setHistoryStorageError(true); }
+    executionHistoryRef.current = next;
+    setExecutionHistory(next);
+  }
+
   function prependExecutionHistoryItem(item: ExecutionHistoryItem) {
-    setExecutionHistory((current) => [item, ...current].slice(0, 12));
+    commitExecutionHistory((current) => [item, ...current]);
   }
 
   function updateExecutionHistoryItem(
     historyId: string,
     patch: Partial<Omit<ExecutionHistoryItem, "id" | "quoteId" | "createdAt">>,
   ) {
-    setExecutionHistory((current) =>
-      current.map((item) =>
-        item.id === historyId
-          ? {
-              ...item,
-              ...patch,
-              updatedAt: Date.now(),
-            }
-          : item,
-      ),
-    );
+    commitExecutionHistory((current) => current.map((item) => item.id === historyId
+      ? { ...item, ...patch, updatedAt: Math.max(Date.now(), item.updatedAt + 1) }
+      : item));
+  }
+
+  async function recheckSolanaHistory(item: ExecutionHistoryItem) {
+    if (!item.solanaSubmission || checkingHistoryId) return;
+    setCheckingHistoryId(item.id);
+    try {
+      const result = await checkSolanaSubmission(item.solanaSubmission);
+      if (item.phase === "success" && result.outcome === "pending") return;
+      const phase = result.outcome === "confirmed" ? "success" : result.outcome === "pending" ? "pending" : "error";
+      const transferStatus = result.outcome === "confirmed" ? "SOURCE_CONFIRMED" : result.outcome === "pending" ? "CONFIRMATION_PENDING" : result.outcome === "expired" ? "EXPIRED" : "FAILED";
+      const error = result.outcome === "confirmed" ? undefined : new SolanaConfirmationError(result.outcome, item.solanaSubmission, result.detail).message;
+      updateExecutionHistoryItem(item.id, { phase, transferStatus, error, currentStep: result.outcome === "confirmed" ? "Source confirmed. Track destination settlement on LayerZeroScan." : undefined });
+      setExecutionState((current) => current.activeHistoryId === item.id ? { ...current, phase, transferStatus, error } : current);
+    } finally { setCheckingHistoryId(null); }
   }
 
   function openLayerZeroApiKeyModal() {
@@ -3790,57 +3849,34 @@ export function BridgeApp() {
     });
   }
 
-  async function handleConnectSourceWallet() {
-    if (!activeSrcChain) {
-      return;
-    }
-
-    if (sourceChainUsesEvmWallet) {
-      if (injectedConnector) {
-        connect({ connector: injectedConnector });
-      }
-
-      return;
-    }
-
-    try {
-      if (activeSrcChain.chainType === "EVM") {
-        throw new Error(
-          `${activeSrcChain.shortName} is not configured in the current EVM wallet adapter.`,
-        );
-      }
-
-      await bridgeWallets.connectWallet(activeSrcChain.chainType);
-    } catch (error) {
-      pushExecutionNotification({
-        tone: "danger",
-        title: "Wallet connection failed",
-        message: getErrorMessage(error),
-        persistent: true,
-      });
-    }
+  function handleConnectSourceWallet() {
+    setWalletManagerNetwork(WALLET_NETWORKS.find((network) => network.type === sourceChainType)?.type ?? "EVM");
+    setIsWalletManagerOpen(true);
   }
 
-  async function handleDisconnectSourceWallet() {
-    if (!activeSrcChain) {
+  async function handleConnectWallet(network: WalletNetwork, walletId: string) {
+    if (network === "EVM") {
+      const connector = evmWalletConnectors.find((candidate) => candidate.uid === walletId);
+      if (!connector) throw new Error("Selected EVM wallet is no longer available.");
+      if (isConnected) await disconnectAsync();
+      await connectAsync({ connector });
       return;
     }
-
-    if (sourceChainUsesEvmWallet) {
-      disconnect();
+    if (network === "TON") {
+      setIsWalletManagerOpen(false);
+      try {
+        await bridgeWallets.connectWallet(network, walletId);
+      } catch (error) {
+        pushExecutionNotification({ tone: "danger", title: "Wallet connection failed", message: getErrorMessage(error), persistent: true });
+      }
       return;
     }
+    await bridgeWallets.connectWallet(network, walletId);
+  }
 
-    try {
-      await bridgeWallets.disconnectWallet(activeSrcChain.chainType);
-    } catch (error) {
-      pushExecutionNotification({
-        tone: "danger",
-        title: "Wallet disconnect failed",
-        message: getErrorMessage(error),
-        persistent: true,
-      });
-    }
+  async function handleDisconnectWallet(network: WalletNetwork) {
+    if (network === "EVM") await disconnectAsync();
+    else await bridgeWallets.disconnectWallet(network);
   }
 
   useEffect(() => {
@@ -4012,58 +4048,6 @@ export function BridgeApp() {
   }, [srcChainKey, dstChainKey, srcTokenAddress, dstTokenAddress, router, pathname]);
 
   useEffect(() => {
-    // Track previous preferred address to detect wallet switches vs manual edits
-    const prevPreferred = prevPreferredDestinationAddressRef.current;
-    prevPreferredDestinationAddressRef.current = preferredDestinationWalletAddress;
-
-    setDestinationAddress((current) => {
-      // "Auto-filled" means it was empty or matches the previous preferred wallet address
-      const wasAutoFilled = !current || current === prevPreferred;
-
-      if (wasAutoFilled) {
-        // Follow the new preferred wallet address
-        if (
-          preferredDestinationWalletAddress &&
-          validateAddressForChainType(destinationChainType, preferredDestinationWalletAddress)
-        ) {
-          return preferredDestinationWalletAddress;
-        }
-
-        if (
-          sourceWalletAddress &&
-          validateAddressForChainType(destinationChainType, sourceWalletAddress)
-        ) {
-          return sourceWalletAddress;
-        }
-
-        return current;
-      }
-
-      // User manually entered a different address — keep it if still valid for this chain type
-      if (current && validateAddressForChainType(destinationChainType, current)) {
-        return current;
-      }
-
-      // Current address is invalid for the new chain type (e.g. chain switched) — auto-fill
-      if (
-        preferredDestinationWalletAddress &&
-        validateAddressForChainType(destinationChainType, preferredDestinationWalletAddress)
-      ) {
-        return preferredDestinationWalletAddress;
-      }
-
-      if (
-        sourceWalletAddress &&
-        validateAddressForChainType(destinationChainType, sourceWalletAddress)
-      ) {
-        return sourceWalletAddress;
-      }
-
-      return current;
-    });
-  }, [destinationChainType, preferredDestinationWalletAddress, sourceWalletAddress]);
-
-  useEffect(() => {
     isQuotingRef.current = isQuoting;
   }, [isQuoting]);
 
@@ -4093,7 +4077,7 @@ export function BridgeApp() {
       return;
     }
 
-    const attemptKey = `${address}:${chainId}->${activeSrcChain.chainId}`;
+    const attemptKey = `${evmConnector?.uid}:${address}:${chainId}->${activeSrcChain.chainId}`;
 
     if (balanceSwitchAttemptRef.current === attemptKey) {
       return;
@@ -4107,7 +4091,7 @@ export function BridgeApp() {
       return;
     }
 
-    void switchInjectedEvmChain(activeSrcChain.chainId, activeSrcChain.shortName).catch(
+    void getConnectorEvmProvider(evmConnector).then((provider) => switchInjectedEvmChain(activeSrcChain.chainId, activeSrcChain.shortName, provider)).catch(
       () => undefined,
     );
   }, [
@@ -4119,6 +4103,7 @@ export function BridgeApp() {
     isConnected,
     isSwitchPending,
     sourceChainUsesEvmWallet,
+    evmConnector,
     switchChainAsync,
   ]);
 
@@ -4209,16 +4194,15 @@ export function BridgeApp() {
     quoteRequestIdRef.current += 1;
     isQuotingRef.current = false;
     setIsQuoting(false);
-  }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, srcChainKey, srcTokenAddress, bridgeApiProvider, sourceWalletAddress, useApiRoutes]);
+  }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, srcChainKey, srcTokenAddress, bridgeApiProvider, sourceWalletAddress, activeExternalWalletSession?.walletId, evmConnector?.uid, useApiRoutes]);
 
   async function requestDirectQuote(simulate = false) {
     if (!quoteRequestState.ready || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken) {
       throw new Error("Select tokens and enter a valid amount and recipient.");
     }
-    if ([srcChain, dstChain].some((chain) =>
-      chain.chainType !== "SOLANA" && (chain.chainType !== "EVM" || !wagmiConfig.chains.some((configured) => configured.id === chain.chainId)),
-    )) {
-      throw new Error("Direct OFT supports configured EVM networks and Solana. Other API routes are available separately and may charge product fees.");
+    if (!supportsDirectOftRoute(srcChain.chainType, dstChain.chainType) ||
+      [srcChain, dstChain].some(chain => chain.chainType === "EVM" && !wagmiConfig.chains.some(configured => configured.id === chain.chainId))) {
+      throw new Error("Direct OFT supports configured EVM networks, Solana ↔ EVM, TON ↔ EVM, and EVM → Aptos / Starknet / Tron / Sui / Stellar. This route family is not yet supported.");
     }
     const params = new URLSearchParams({
       contractAddresses: selectedSrcToken.address,
@@ -4234,6 +4218,21 @@ export function BridgeApp() {
       amount: BigInt(quoteRequestState.payload.amount),
       from: sourceWalletAddress, to: destinationAddress,
       solanaRpcUrl: rpcConfig.solana?.[0], simulate,
+      readNativeBalance: async (chain, address) => {
+        const client = getPublicClient(wagmiConfig, { chainId: chain.chainId });
+        if (!client) throw new Error(`No RPC configured for ${chain.shortName}.`);
+        return client.getBalance({ address });
+      },
+      readEvmCode: async (chain, address) => {
+        const client = getPublicClient(wagmiConfig, { chainId: chain.chainId });
+        if (!client) throw new Error(`No public client for ${chain.chainKey}.`);
+        return client.getCode({ address });
+      },
+      readEvmStorage: async (chain, address, slot) => {
+        const client = getPublicClient(wagmiConfig, { chainId: chain.chainId });
+        if (!client) throw new Error(`No public client for ${chain.chainKey}.`);
+        return client.getStorageAt({ address, slot });
+      },
       discoverPeers: true,
       fetchDiscoveryQuote: () => fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
         method: "POST",
@@ -4387,6 +4386,7 @@ export function BridgeApp() {
   const executionLockRef = useRef(false);
   const executionContext = JSON.stringify([srcChainKey, dstChainKey, srcTokenAddress, dstTokenAddress,
     amountInput, destinationAddress, sourceWalletAddress, useApiRoutes, selectedCustomOftConfigId]);
+  const unresolvedSolanaTransfer = executionHistory.find((item) => item.executionKey === executionContext && item.phase === "pending" && item.solanaSubmission);
   const executionContextRef = useRef(executionContext);
   useEffect(() => { executionContextRef.current = executionContext; }, [executionContext]);
   function assertCurrentExecutionContext() {
@@ -4400,11 +4400,16 @@ export function BridgeApp() {
     }
 
     if (executionLockRef.current) return;
+    if (unresolvedSolanaTransfer) {
+      pushExecutionNotification({ tone: "neutral", title: "Transaction already submitted", message: "Use Check status in Transfers before sending this transfer again." });
+      return;
+    }
     executionLockRef.current = true;
     const historyId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const initialHistoryItem: ExecutionHistoryItem = {
       id: historyId,
       quoteId: quote.id,
+      executionKey: executionContext,
       phase: "running",
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -4507,6 +4512,7 @@ export function BridgeApp() {
               currentStep: step.description ?? `Sending transaction step ${index + 1}`,
             });
 
+            assertCurrentExecutionContext();
             const hash = await sendEvmTransactionForChain(srcChain, {
               from: address as Address,
               to: payload.to as Address,
@@ -4616,6 +4622,11 @@ export function BridgeApp() {
           sourceChainType,
           resolvedUserSteps,
           sourceWalletAddress ?? "",
+          (submission) => {
+            lastTxHash = submission.signature;
+            setExecutionState((current) => ({ ...current, txHash: submission.signature, transferStatus: "SUBMITTED" }));
+            updateExecutionHistoryItem(historyId, { txHash: submission.signature, solanaSubmission: submission, transferStatus: "SUBMITTED", explorerUrl: getLayerZeroScanUrl(submission.signature), currentStep: "Submitted. Waiting for Solana confirmation." });
+          },
         );
 
         if (submittedTxHash) {
@@ -4675,7 +4686,7 @@ export function BridgeApp() {
           transferStatus: status.status,
           explorerUrl: status.explorerUrl,
           error: statusError,
-          currentStep: isTerminal ? undefined : `Tracking transfer · ${status.status}`,
+          currentStep: isTerminal ? undefined : `Tracking transfer · ${formatTransferStatus(status.status)}`,
         });
 
         setExecutionState((current) =>
@@ -4733,7 +4744,7 @@ export function BridgeApp() {
         title: succeeded ? "Transfer completed" : "Transfer failed",
         message: succeeded
           ? `${initialHistoryItem.srcAmount} → ${initialHistoryItem.expectedDstAmount}`
-          : transferError ?? transferStatus.status,
+          : transferError ?? formatTransferStatus(transferStatus.status),
         persistent: !succeeded,
       });
 
@@ -4745,25 +4756,19 @@ export function BridgeApp() {
     } catch (error) {
       const errorMessage = getErrorMessage(error);
       const submittedHash = error && typeof error === "object" && "transactionHash" in error && typeof error.transactionHash === "string" ? error.transactionHash : undefined;
-
+      const pending = error instanceof SolanaConfirmationError && error.outcome === "pending";
+      const transferStatus = error instanceof SolanaConfirmationError ? (pending ? "CONFIRMATION_PENDING" : error.outcome === "expired" ? "EXPIRED" : "FAILED") : undefined;
       setExecutionState((current) => ({
-        ...current,
-        phase: "error",
-        activeHistoryId: historyId,
-        error: errorMessage,
-        txHash: submittedHash ?? current.txHash,
+        ...current, phase: pending ? "pending" : "error", activeHistoryId: historyId,
+        error: errorMessage, transferStatus, txHash: submittedHash ?? current.txHash,
       }));
       updateExecutionHistoryItem(historyId, {
-        phase: "error",
-        error: errorMessage,
-        ...(submittedHash ? { txHash: submittedHash } : {}),
-        currentStep: undefined,
+        phase: pending ? "pending" : "error", error: errorMessage, transferStatus,
+        ...(submittedHash ? { txHash: submittedHash } : {}), currentStep: undefined,
       });
       pushExecutionNotification({
-        tone: "danger",
-        title: "Execution failed",
-        message: errorMessage,
-        persistent: true,
+        tone: pending ? "neutral" : "danger", title: pending ? "Confirmation pending" : "Execution stopped",
+        message: pending ? "Transaction submitted. Check its status in Transfers before retrying." : "See the transfer record for details.",
       });
     } finally {
       executionLockRef.current = false;
@@ -4847,7 +4852,7 @@ export function BridgeApp() {
     ) {
       return {
         ready: false,
-        reason: getAddressValidationCopy(customOftDstChain.chainType),
+        reason: destinationRecipientCopy,
       } as const;
     }
 
@@ -4886,6 +4891,7 @@ export function BridgeApp() {
     customOftSrcChain,
     customOftRuntimeDestinationChains.length,
     customOftRuntimeSourceChains.length,
+    destinationRecipientCopy,
     destinationAddress,
     selectedCustomOftConfig,
     selectedCustomOftDestinationDeployment,
@@ -4906,6 +4912,10 @@ export function BridgeApp() {
     }
 
     if (executionLockRef.current) return;
+    if (unresolvedSolanaTransfer) {
+      pushExecutionNotification({ tone: "neutral", title: "Transaction already submitted", message: "Use Check status in Transfers before sending this transfer again." });
+      return;
+    }
     executionLockRef.current = true;
     const historyId = createStableId();
     const initialAmountLabel = `${formatTokenAmount(
@@ -5096,6 +5106,7 @@ export function BridgeApp() {
       : null;
   const canExecuteQuote =
     Boolean(quote) &&
+    !unresolvedSolanaTransfer &&
     !isQuoting &&
     !quoteError &&
     executionState.phase !== "running" &&
@@ -5104,6 +5115,7 @@ export function BridgeApp() {
   const canExecuteCustomOft =
     isCustomOftSource &&
     customOftRequestState.ready &&
+    !unresolvedSolanaTransfer &&
     executionState.phase !== "running" &&
     sourceWalletConnected &&
     canExecuteSelectedSourceChain;
@@ -5117,14 +5129,11 @@ export function BridgeApp() {
         : "Refresh"
       : "Refresh";
   const executionTone = getExecutionTone(executionState.phase);
-  const executionPhaseCopy = getExecutionPhaseLabel(executionState.phase);
-  const activeExecutionHistoryItem = executionState.activeHistoryId
-    ? executionHistory.find((item) => item.id === executionState.activeHistoryId) ?? null
-    : null;
+
   const tokenDisplaySourceLabel =
-    tokenDisplaySource === "stargate" ? "Stargate" : "LayerZero";
+    tokenDisplaySource === "stargate" ? "Standard" : "Direct API";
   const tokenDisplaySourceNextLabel =
-    tokenDisplaySource === "stargate" ? "Switch to LayerZero" : "Switch to Stargate";
+    tokenDisplaySource === "stargate" ? "Switch to Direct API" : "Switch to Standard";
   const walletConnectPending = sourceChainUsesEvmWallet
     ? isConnectPending
     : bridgeWallets.isPending;
@@ -5132,7 +5141,7 @@ export function BridgeApp() {
     isCustomOftSource
       ? customOftRequestState.reason
       : isLayerZeroFallback
-        ? "LayerZero key not provided. Falling back to Stargate v2 until you add one."
+        ? "Using default API routes. Add an API key to enable Direct API."
         : null;
   const executionCapabilityCopy =
     activeSrcChain && !canExecuteSelectedSourceChain
@@ -5146,16 +5155,15 @@ export function BridgeApp() {
     setAmountInput(formatUnits(selectedBalanceValue, activeBalanceToken.decimals));
   }
 
-  function handleFillDestinationFromConnectedWallet() {
-    if (!hasPreferredDestinationWalletAddress) {
-      return;
-    }
-
-    setDestinationAddress(preferredDestinationWalletAddress);
+  function handleConnectDestinationWallet() {
+    if (!destinationWalletNetwork) return;
+    setThirdPartyRecipient(null);
+    setWalletManagerNetwork(destinationWalletNetwork);
+    setIsWalletManagerOpen(true);
   }
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden bg-[var(--background)] text-[var(--foreground)] xl:h-screen">
+    <div className="bridge-shell relative min-h-dvh bg-[var(--background)] text-[var(--foreground)]">
       <input
         ref={customOftImportInputRef}
         type="file"
@@ -5166,116 +5174,59 @@ export function BridgeApp() {
       <div className="pointer-events-none absolute inset-x-0 top-0 h-56 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.14),transparent_55%)]" />
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent,rgba(255,255,255,0.025)_40%,transparent)]" />
 
-      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-3 p-3 sm:p-4 xl:h-full">
-        <header className="flex flex-wrap items-center justify-between gap-3 rounded-[1.25rem] border border-white/10 bg-white/[0.03] px-3 py-2.5 backdrop-blur">
-          <div className="min-w-0 space-y-1 text-right">
-            <div className="flex min-w-0 flex-wrap items-center justify-center gap-2">
-              <span className="inline-flex shrink-0 items-center rounded-full border border-white/12 bg-white/[0.06] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-white">
-                Earthbound
-              </span>
-              <p className="truncate text-sm font-medium tracking-[-0.03em] text-white">
-                faster Stargate bridging frontend
-              </p>
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center justify-center gap-2 text-[11px] text-[var(--muted)]">
-              <span className="uppercase tracking-[0.18em] text-[var(--muted-strong)]">
-                Powered by
-              </span>
-              <a
-                href="https://web3resear.ch"
-                target="_blank"
-                rel="noreferrer"
-                aria-label="Open the Web3Resear.ch website"
-                className="inline-flex max-w-full items-center rounded-full border border-white/10 bg-black px-2.5 py-1 font-medium text-white/84 transition hover:border-white/24 hover:bg-white/[0.04] hover:text-white"
-              >
-                🦒Web3Resear.ch
-              </a>
-              <a
-                href={GITHUB_REPOSITORY_URL}
-                target="_blank"
-                rel="noreferrer"
-                aria-label="Open the Earthbound GitHub repository"
-                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black px-2.5 py-1 font-medium text-white/84 transition hover:border-white/24 hover:bg-white/[0.04] hover:text-white"
-              >
-                <GitHubIcon className="h-3.5 w-3.5" />
-                <span>GitHub</span>
-              </a>
-              <button
-                type="button"
-                onClick={() => setIsRpcSettingsOpen(true)}
-                className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black px-2.5 py-1 font-medium text-white/84 transition hover:border-white/24 hover:bg-white/[0.04] hover:text-white"
-                title="Configure RPC endpoints"
-              >
-                <SettingsIcon className="h-3.5 w-3.5" />
-                <span>RPC</span>
-              </button>
-            </div>
+      <div className="bridge-layout relative z-10 flex min-h-dvh w-full flex-col gap-3 p-3 sm:p-4">
+        <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2 backdrop-blur">
+          <div className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+            <h1 className="text-sm font-semibold tracking-tight text-white">Earthbound</h1>
+            <span className="text-[11px] text-[var(--muted)]">Powered by</span>
+            <a
+              href="https://web3resear.ch"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open the Web3Resear.ch website"
+              className="text-xs font-medium text-white/80 transition hover:text-white"
+            >
+              🦒Web3Resear.ch
+            </a>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusPill tone="neutral">{supportedChains.length} Networks</StatusPill>
-            {activeSrcChain ? (
-              <StatusPill tone="neutral">
-                <span className="inline-flex items-center gap-1.5">
-                  <AssetIcon
-                    label={activeSrcChain.shortName}
-                    src={getStargateChainIconUrl(activeSrcChain.chainKey)}
-                    size="xs"
-                  />
-                  {activeSrcChain.shortName}
-                </span>
-              </StatusPill>
-            ) : null}
-            {activeSrcChain && activeDstChain ? (
-              <ArrowRightIcon className="h-3 w-3 text-white/30" />
-            ) : null}
-            {activeDstChain ? (
-              <StatusPill tone="neutral">
-                <span className="inline-flex items-center gap-1.5">
-                  <AssetIcon
-                    label={activeDstChain.shortName}
-                    src={getStargateChainIconUrl(activeDstChain.chainKey)}
-                    size="xs"
-                  />
-                  {activeDstChain.shortName}
-                </span>
-              </StatusPill>
-            ) : null}
-            {sourceWalletConnected ? (
-              <>
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-white">
-                  <WalletIcon className="h-3 w-3 text-white/60" />
-                  {shortenAddress(sourceWalletAddress)}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void handleDisconnectSourceWallet()}
-                  disabled={walletConnectPending}
-                  title="Disconnect wallet"
-                  className="inline-flex items-center justify-center rounded-full border border-white/12 bg-white/[0.04] p-2 text-white/70 transition hover:border-white/24 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <XIcon className="h-3.5 w-3.5" />
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                disabled={(sourceChainUsesEvmWallet && !injectedConnector) || walletConnectPending}
-                onClick={() => void handleConnectSourceWallet()}
-                title={walletConnectButtonCopy}
-                className="inline-flex items-center justify-center gap-2 rounded-full bg-white px-4 py-2 text-xs font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <WalletIcon className="h-3.5 w-3.5" />
-                {walletConnectPending ? "Connecting…" : (activeSrcChain ? activeSrcChain.shortName : "Connect")}
-              </button>
-            )}
+          <div className="ml-auto flex items-center gap-2">
+            <a
+              href={GITHUB_REPOSITORY_URL}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open the Earthbound GitHub repository"
+              title="GitHub"
+              className={ICON_BUTTON_CLASS}
+            >
+              <GitHubIcon />
+            </a>
+            <button
+              type="button"
+              onClick={() => setIsRpcSettingsOpen(true)}
+              className={ICON_BUTTON_CLASS}
+              aria-label="Configure RPC endpoints"
+              title="Configure RPC endpoints"
+            >
+              <SettingsIcon />
+            </button>
+            <button
+              type="button"
+              disabled={walletConnectPending}
+              onClick={handleConnectSourceWallet}
+              title="Select, switch, or disconnect wallets"
+              className={`${PRIMARY_BUTTON_CLASS} gap-2`}
+            >
+              <WalletIcon className="h-3.5 w-3.5" />
+              Wallets
+              {sourceWalletConnected ? <span className="font-normal opacity-70">{shortenAddress(sourceWalletAddress)}</span> : null}
+            </button>
           </div>
         </header>
 
-        <main className="grid flex-1 gap-3 xl:min-h-0 xl:grid-cols-[minmax(0,1.72fr)_420px]">
+        <main className="bridge-main grid min-w-0 flex-1 gap-3">
           <section
             id="transfer"
-            className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.32)] backdrop-blur sm:p-4"
+            className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.32)] backdrop-blur sm:p-4"
           >
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-3">
               <div className="flex items-center gap-3">
@@ -5287,67 +5238,32 @@ export function BridgeApp() {
                   type="button"
                   onClick={() => setIsCustomOftSetupModalOpen(true)}
                   title={customOftConfigs.length ? `${customOftConfigs.length} custom OFT config(s)` : "Add custom OFT config"}
-                  className={`group inline-flex items-center gap-2 rounded-[1.05rem] border px-3 py-2 text-left transition ${
-                    isCustomOftSource
-                      ? "border-white/30 bg-white/[0.08] hover:bg-white/[0.12]"
-                      : "border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] hover:border-white/24 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05))]"
-                  }`}
+                  className={`${GHOST_BUTTON_CLASS} gap-2`}
                 >
-                  <span
-                    className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold uppercase tracking-[0.14em] transition ${
-                      isCustomOftSource
-                        ? "border-white bg-white text-black"
-                        : "border-white/14 bg-black text-white"
-                    }`}
-                  >
-                    OFT
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-[9px] font-semibold uppercase tracking-[0.22em] text-[var(--muted)] transition group-hover:text-white/60">
-                      Custom
-                    </span>
-                    <span className="text-[11px] font-medium text-white">
-                      {customOftConfigs.length ? customOftConfigs.length : "+"}
-                    </span>
-                  </span>
+                  Custom OFT
+                  <span className="text-white/50">{customOftConfigs.length || "+"}</span>
                 </button>
                 <button
                   type="button"
                   onClick={handleToggleRouteSource}
                   aria-label={tokenDisplaySourceNextLabel}
                   title={tokenDisplaySourceNextLabel}
-                  className="group inline-flex items-center gap-2 rounded-[1.05rem] border border-white/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-3 py-2 text-left transition hover:border-white/24 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05))]"
+                  className={`${GHOST_BUTTON_CLASS} gap-2`}
                 >
-                  <span
-                    className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold uppercase tracking-[0.14em] transition ${
-                      tokenDisplaySource === "stargate"
-                        ? "border-white bg-white text-black"
-                        : "border-white/14 bg-black text-white"
-                    }`}
-                  >
-                    {tokenDisplaySource === "stargate" ? "SG" : "L0"}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-[9px] font-semibold uppercase tracking-[0.22em] text-[var(--muted)] transition group-hover:text-white/60">
-                      Source
-                    </span>
-                    <span className="text-[11px] font-medium text-white">
-                      {tokenDisplaySourceLabel}
-                    </span>
-                  </span>
-                  <SwitchIcon className="h-3.5 w-3.5 shrink-0 text-white/40 transition group-hover:text-white/70" />
+                  {tokenDisplaySourceLabel}
+                  <SwitchIcon className="h-3.5 w-3.5 shrink-0 text-white/60" />
                 </button>
                 {executionState.transferStatus ? (
-                  <StatusPill tone={executionTone}>{executionState.transferStatus}</StatusPill>
+                  <StatusPill tone={executionTone}>{formatTransferStatus(executionState.transferStatus)}</StatusPill>
                 ) : null}
               </div>
             </div>
 
-            <div className="mt-3 grid min-h-0 gap-3 xl:grid-cols-2">
+            <div className="bridge-route-panels mt-3 grid min-h-0 min-w-0 gap-3">
                   <div
-                    className={`${SURFACE_CARD_CLASS} grid min-h-0 grid-rows-[auto_minmax(0,1fr)] p-4`}
+                    className={`${SURFACE_CARD_CLASS} grid min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] p-4`}
                   >
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
                           From
@@ -5355,7 +5271,7 @@ export function BridgeApp() {
                         <p className="mt-1 text-sm font-medium text-white">Origin</p>
                       </div>
 
-                      <label className="block w-full max-w-[24rem] space-y-2">
+                      <label className="block min-w-0 w-full max-w-[24rem] space-y-2">
                         <span className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
                           Amount
                         </span>
@@ -5394,7 +5310,7 @@ export function BridgeApp() {
                       </label>
                     </div>
 
-                    <div className="mt-3 grid min-h-0 flex-1 gap-3 sm:grid-cols-2">
+                    <div className="mt-3 grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
                       <InlineOptionList
                         title="Chain"
                         items={srcChainItems}
@@ -5412,7 +5328,7 @@ export function BridgeApp() {
                   </div>
 
                   <div
-                    className={`${SURFACE_CARD_CLASS} grid min-h-0 grid-rows-[auto_minmax(0,1fr)] p-4`}
+                    className={`${SURFACE_CARD_CLASS} grid min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] p-4`}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
@@ -5440,7 +5356,7 @@ export function BridgeApp() {
                       </div>
                     </div>
 
-                    <div className="mt-3 grid min-h-0 flex-1 gap-3 sm:grid-cols-2">
+                    <div className="mt-3 grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
                       <InlineOptionList
                         title="Chain"
                         items={isCustomOftSource ? customOftDstChainItems : dstChainItems}
@@ -5460,38 +5376,51 @@ export function BridgeApp() {
 
                 {quoteError || providerNoticeCopy || executionCapabilityCopy ? (
                   <div className="mt-3 rounded-[1.25rem] border border-white/18 bg-white/[0.04] px-4 py-3 text-sm text-white">
-                    {quoteError ?? providerNoticeCopy ?? executionCapabilityCopy}
+                    <p>{quoteError ?? providerNoticeCopy ?? executionCapabilityCopy}</p>
+                    {!useApiRoutes && quoteError?.includes("Enable API routes") ? (
+                      <button type="button" onClick={() => setUseApiRoutes(true)} className="mt-2 rounded-full border border-white/20 px-3 py-2 text-xs hover:bg-white/10">Use API routes (provider fees apply)</button>
+                    ) : null}
                   </div>
                 ) : null}
 
                 <div className="mt-3 grid gap-3 rounded-[1.15rem] border border-white/10 bg-white/[0.03] px-3 py-2.5">
                   <div className="min-w-0 flex-1">
                     <div className="grid gap-2.5 lg:grid-cols-[minmax(0,1.45fr)_minmax(12rem,0.8fr)]">
-                      <label className="block space-y-1.5">
+                      <div className="block space-y-1.5">
                         <span className="flex items-center justify-between gap-2">
                           <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
                             Destination address
                           </span>
                           <button
                             type="button"
-                            onClick={handleFillDestinationFromConnectedWallet}
-                            disabled={!hasPreferredDestinationWalletAddress}
-                            title={hasPreferredDestinationWalletAddress ? `Use ${destinationWalletLabel}` : "No wallet connected"}
-                            className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/72 transition hover:text-white disabled:cursor-not-allowed disabled:text-white/30"
+                            onClick={handleConnectDestinationWallet}
+                            disabled={!destinationWalletNetwork}
+                            title={hasPreferredDestinationWalletAddress ? `Manage ${destinationWalletLabel}` : "Connect destination wallet"}
+                            className="inline-flex items-center gap-1.5 text-xs font-medium text-white/72 transition hover:text-white disabled:cursor-not-allowed disabled:text-white/30"
                           >
                             <WalletIcon className="h-3 w-3" />
                             {hasPreferredDestinationWalletAddress
                               ? destinationWalletLabel
-                              : "—"}
+                              : `Connect ${getChainTypeDisplayLabel(destinationChainType)}`}
                           </button>
                         </span>
                         <input
-                          placeholder={destinationAddressPlaceholder}
+                          aria-label="Destination address"
+                          placeholder={useThirdPartyRecipient ? destinationAddressPlaceholder : "Connect destination wallet"}
                           value={destinationAddress}
-                          onChange={(event) => setDestinationAddress(event.target.value)}
+                          readOnly={!useThirdPartyRecipient}
+                          onChange={(event) => { if (activeDstChain && useThirdPartyRecipient) setThirdPartyRecipient({ chainKey: activeDstChain.chainKey, address: event.target.value.trim() }); }}
                           className={`${FIELD_CLASS} h-10 rounded-[1.05rem] px-3 py-2 text-xs`}
                         />
-                      </label>
+                        <ToggleSwitch
+                          checked={useThirdPartyRecipient}
+                          disabled={!activeDstChain}
+                          onCheckedChange={(checked) => setThirdPartyRecipient(checked && activeDstChain ? { chainKey: activeDstChain.chainKey, address: "" } : null)}
+                        >
+                          Send to a third-party address
+                        </ToggleSwitch>
+                        {!useThirdPartyRecipient && activeDstChain && !hasPreferredDestinationWalletAddress ? <p className="text-xs text-amber-200/80">{destinationRecipientCopy}</p> : null}
+                      </div>
 
                       <div className="rounded-[1.05rem] border border-white/10 bg-black px-3 py-2.5">
                         <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
@@ -5526,12 +5455,14 @@ export function BridgeApp() {
 
                   <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
                   {!isCustomOftSource ? (
-                    <label className="flex min-w-0 basis-48 flex-1 items-start gap-2 text-xs leading-5 text-[var(--muted)]">
-                      <input className="mt-1 shrink-0" type="checkbox" checked={useApiRoutes}
-                        disabled={executionState.phase === "running"}
-                        onChange={(event) => setUseApiRoutes(event.target.checked)} />
-                      <span>Use API routes <span className="text-[var(--muted-strong)]">(may include Stargate product fees)</span></span>
-                    </label>
+                    <ToggleSwitch
+                      className="basis-48 flex-1"
+                      checked={useApiRoutes}
+                      disabled={executionState.phase === "running"}
+                      onCheckedChange={setUseApiRoutes}
+                    >
+                      <span>Use API routes <span className="text-[var(--muted-strong)]">(provider fees may apply)</span></span>
+                    </ToggleSwitch>
                   ) : null}
                   <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
                     {isCustomOftSource ? (
@@ -5539,7 +5470,7 @@ export function BridgeApp() {
                         type="button"
                         onClick={openLayerZeroApiKeyModal}
                         title="Set LayerZero API key"
-                        className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08]"
+                        className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] h-9 px-3 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08]"
                       >
                         <KeyIcon className="h-3.5 w-3.5" />
                         <span>API Key</span>
@@ -5550,7 +5481,7 @@ export function BridgeApp() {
                         onClick={() => void handleRequestQuote("manual")}
                         disabled={!canRequestQuote || isQuoting}
                         title={refreshButtonCopy}
-                        className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                        className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-white/12 bg-white/[0.04] h-9 px-3 text-xs font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <RefreshIcon className={`h-3.5 w-3.5 ${isQuoting ? "animate-spin" : ""}`} />
                         <span>{isQuoting ? "Quoting" : "Quote"}</span>
@@ -5562,7 +5493,7 @@ export function BridgeApp() {
                         isCustomOftSource ? void handleExecuteCustomOft() : void handleExecuteQuote()
                       }
                       disabled={isCustomOftSource ? !canExecuteCustomOft : !canExecuteQuote}
-                      className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-white px-4 py-2 text-xs font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-white h-9 px-3 text-xs font-semibold text-black transition hover:bg-white/85 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <SendIcon className="h-3.5 w-3.5" />
                       <span>{executionState.phase === "running" ? "Executing..." : "Execute"}</span>
@@ -5572,7 +5503,7 @@ export function BridgeApp() {
                 </div>
           </section>
 
-          <aside className="grid min-h-0 min-w-0 gap-3 rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.32)] backdrop-blur sm:p-4 xl:grid-rows-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+          <aside className="bridge-sidebar grid min-h-0 min-w-0 gap-3 rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.32)] backdrop-blur sm:p-4">
             <section id="quote" className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4">
               <div className="flex items-start justify-between gap-3">
                 <SectionHeading
@@ -5765,154 +5696,52 @@ export function BridgeApp() {
               )}
             </section>
 
-              <section
-                id="history"
-                className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4"
-              >
-              <div className="flex items-start justify-between gap-3">
-                <SectionHeading
-                  compact
-                  eyebrow="Execution"
-                  title="Transfers"
-                  description={activeExecutionHistoryItem?.currentStep}
-                />
-                <div className="flex shrink-0 flex-wrap justify-end gap-2">
-                  <StatusPill tone={executionTone}>{executionPhaseCopy}</StatusPill>
-                  {executionHistory.length ? (
-                    <StatusPill tone="neutral">{executionHistory.length} item(s)</StatusPill>
-                  ) : null}
-                </div>
+            <section id="history" className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.03] p-4">
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+                <SectionHeading compact eyebrow="Execution" title="Transfers" />
+                <span className="text-xs text-[var(--muted)]">{executionHistory.length ? `${executionHistory.length} recent` : "No activity"}</span>
               </div>
-
+              {historyStorageError ? <p role="status" className="mt-2 text-xs text-amber-200/80">Browser storage is unavailable. These records may be lost when this page closes.</p> : null}
               {executionHistory.length ? (
-                <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-x-hidden overflow-y-auto pr-1">
-                  {executionHistory.map((item) => {
-                    const itemTone = getExecutionTone(item.phase);
-                    const isActive = item.id === executionState.activeHistoryId;
-
-                    return (
-                      <article
-                        key={item.id}
-                        className={`min-w-0 rounded-[1.25rem] border px-4 py-3 transition ${
-                          isActive
-                            ? "border-white/20 bg-black"
-                            : "border-white/10 bg-black/70"
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-white">
-                              {item.srcChainName} to {item.dstChainName}
-                            </p>
-                            <p className="mt-1 truncate text-xs text-[var(--muted)]">
-                              {item.routeLabel}
-                            </p>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-2">
-                            {isActive ? (
-                              <span className="inline-flex rounded-full border border-white/12 bg-white/[0.05] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/76">
-                                Live
-                              </span>
-                            ) : null}
-                            <StatusPill tone={itemTone}>{getExecutionHistoryStatus(item)}</StatusPill>
-                          </div>
-                        </div>
-
-                        <div className="mt-3 rounded-[1.05rem] border border-white/10 bg-white/[0.02] px-3 py-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
-                                Send
-                              </p>
-                              <p className="mt-1 truncate text-sm font-medium text-white">
-                                <InlineAssetLabel label={item.srcTokenSymbol} src={item.srcTokenIconUrl}>
-                                  {item.srcAmount}
-                                </InlineAssetLabel>
-                              </p>
-                            </div>
-                            <ArrowRightIcon className="h-3 w-3 shrink-0 text-[var(--muted)]" />
-                            <div className="min-w-0 text-right">
-                              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
-                                Receive
-                              </p>
-                              <p className="mt-1 truncate text-sm font-medium text-white">
-                                <InlineAssetLabel label={item.dstTokenSymbol} src={item.dstTokenIconUrl}>
-                                  {item.expectedDstAmount}
-                                </InlineAssetLabel>
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--muted)]">
-                            <InlineAssetLabel
-                              label={item.srcChainName}
-                              src={item.srcChainIconUrl}
-                              className="text-white/76"
-                            >
-                              {item.srcChainName}
-                            </InlineAssetLabel>
-                            <ArrowRightIcon className="h-2.5 w-2.5" />
-                            <InlineAssetLabel
-                              label={item.dstChainName}
-                              src={item.dstChainIconUrl}
-                              className="text-white/76"
-                            >
-                              {item.dstChainName}
-                            </InlineAssetLabel>
-                            <span>·</span>
-                            <span>{formatTimeLabel(item.updatedAt)}</span>
-                          </div>
-                        </div>
-
-                        {item.currentStep ? (
-                          <p className="mt-3 text-xs leading-5 text-[var(--muted)]">
-                            {item.currentStep}
-                          </p>
+                <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1" aria-label="Transfer history">
+                  {executionHistory.map((item) => (
+                    <article key={item.id} className="min-w-0 rounded-xl border border-white/10 bg-black/50 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="min-w-0 text-xs font-medium text-white">{item.srcChainName} → {item.dstChainName}</p>
+                        <span className={`rounded-full px-2 py-1 text-[10px] ${item.phase === "error" ? "bg-red-400/10 text-red-300" : item.phase === "success" ? "bg-emerald-400/10 text-emerald-200" : "bg-white/10 text-white/70"}`}>
+                          {getExecutionHistoryStatus(item)}
+                        </span>
+                      </div>
+                      <p className="mt-2 break-words text-sm font-medium">{item.srcAmount} <span className="font-normal text-white/40">→</span> {item.expectedDstAmount}</p>
+                      <p className="mt-1 text-[11px] text-[var(--muted)]">{formatTimeLabel(item.createdAt)} · {formatHistoryRouteLabel(item.routeLabel)}</p>
+                      {item.currentStep ? <p className="mt-2 break-words text-xs leading-5 text-white/60">{formatExecutionCopy(item.currentStep)}</p> : null}
+                      {item.error ? <p className="mt-2 line-clamp-2 break-words text-xs leading-5 text-amber-200/80">{formatExecutionCopy(item.error)}</p> : null}
+                      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                        {item.solanaSubmission && (item.phase === "pending" || item.phase === "running" || item.transferStatus === "EXPIRED") ? (
+                          <button type="button" disabled={checkingHistoryId !== null || item.phase === "running"} onClick={() => void recheckSolanaHistory(item)} className="rounded-full border border-white/15 px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40">
+                            {checkingHistoryId === item.id ? "Checking…" : "Check status"}
+                          </button>
                         ) : null}
-
-                        {item.error ? (
-                          <div className="mt-3 max-h-40 overflow-y-auto rounded-[1rem] border border-white/18 bg-white/[0.04] px-3 py-3 text-sm leading-6 text-white whitespace-pre-wrap break-words">
-                            {item.error}
-                          </div>
-                        ) : null}
-
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          {item.txHash ? (
-                            <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-white/80">
-                              Tx {shortenAddress(item.txHash)}
-                            </span>
-                          ) : null}
-                          {item.minimumDstAmount ? (
-                            <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-white/80">
-                              Min {item.minimumDstAmount}
-                            </span>
-                          ) : null}
-                          {item.explorerUrl ? (
-                            <a
-                              href={item.explorerUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center rounded-full border border-white/12 bg-white/[0.04] px-3 py-1.5 text-[11px] font-medium text-white transition hover:border-white/24 hover:bg-white/[0.08]"
-                            >
-                              LayerZeroScan
-                            </a>
-                          ) : (
-                            <span className="inline-flex items-center rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-[11px] font-medium text-white/36">
-                              LayerZeroScan pending
-                            </span>
-                          )}
-                        </div>
-
-                        <p className="mt-2 text-[11px] text-[var(--muted)]">
-                          Destination {shortenAddress(item.destinationAddress)}
-                        </p>
-                      </article>
-                    );
-                  })}
+                        {item.solanaSubmission ? <a className="text-white/70 hover:text-white" href={`https://solscan.io/tx/${item.solanaSubmission.signature}`} target="_blank" rel="noreferrer">Solscan ↗</a> : null}
+                        {item.explorerUrl ? <a className="text-white/70 hover:text-white" href={item.explorerUrl} target="_blank" rel="noreferrer">LayerZeroScan ↗</a> : null}
+                      </div>
+                      <details className="mt-2 text-xs">
+                        <summary className="cursor-pointer py-1 text-white/50 hover:text-white">Details</summary>
+                        <dl className="mt-2 space-y-2 break-all text-white/70">
+                          <div><dt className="text-white/40">Destination</dt><dd className="mt-1 font-mono">{item.destinationAddress}</dd></div>
+                          {item.minimumDstAmount ? <div><dt className="text-white/40">Minimum receive</dt><dd>{item.minimumDstAmount}</dd></div> : null}
+                          {item.txHash ? <div><dt className="text-white/40">Transaction</dt><dd className="mt-1 font-mono">{item.txHash}</dd></div> : null}
+                        </dl>
+                        {item.error ? <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-5 text-amber-200/80">{formatExecutionCopy(item.error)}</p> : null}
+                      </details>
+                    </article>
+                  ))}
                 </div>
               ) : (
-                <div className="mt-4 rounded-[1.25rem] border border-dashed border-white/12 bg-black/40 px-4 py-3 text-sm text-[var(--muted)]">
-                  No cross-chain execution yet.
+                <div className="flex min-h-32 flex-1 flex-col items-center justify-center gap-2 text-center text-sm text-white/40">
+                  <ArrowRightIcon className="h-5 w-5" />
+                  <p>Your transfers will appear here.</p>
+                  <p className="max-w-56 text-xs leading-5">Follow confirmation, inspect transaction details, and track delivery.</p>
                 </div>
               )}
             </section>
@@ -5940,6 +5769,21 @@ export function BridgeApp() {
           }}
           onDelete={handleDeleteCustomOftConfig}
           onClose={() => setIsCustomOftSetupModalOpen(false)}
+        />
+      ) : null}
+      {isWalletManagerOpen ? (
+        <WalletManagerModal
+          initialNetwork={walletManagerNetwork}
+          sessions={{
+            ...bridgeWallets.walletSessionsByChainType,
+            ...(isConnected && address ? { EVM: { address, label: evmConnector?.name ?? "EVM Wallet", walletId: evmConnector?.uid } } : {}),
+          }}
+          getOptions={(network) => network === "EVM"
+            ? evmWalletConnectors.map((connector) => ({ id: connector.uid, label: connector.name, installed: true }))
+            : bridgeWallets.getWalletOptions(network)}
+          onConnect={handleConnectWallet}
+          onDisconnect={handleDisconnectWallet}
+          onClose={() => setIsWalletManagerOpen(false)}
         />
       ) : null}
       {isRpcSettingsOpen ? (
@@ -5983,16 +5827,16 @@ export function BridgeApp() {
         />
       ) : null}
 
-      <div className="pointer-events-none fixed bottom-3 right-3 z-30 flex max-h-[calc(100vh-1.5rem)] w-[min(30rem,calc(100vw-1.5rem))] flex-col gap-2">
+      <div className="pointer-events-none fixed top-3 right-3 z-30 flex max-h-[50dvh] w-[min(24rem,calc(100vw-1.5rem))] flex-col gap-2">
         {executionNotifications.map((notification) => (
           <div
             key={notification.id}
-            className={`pointer-events-auto rounded-[1.25rem] border px-4 py-3 shadow-[0_20px_60px_rgba(0,0,0,0.35)] backdrop-blur ${
+            className={`pointer-events-auto rounded-[1.25rem] border px-4 py-3 shadow-[0_20px_60px_rgba(0,0,0,0.35)] ${
               notification.tone === "success"
                 ? "border-white/30 bg-white text-black"
                 : notification.tone === "danger"
                   ? "border-white/18 bg-black text-white"
-                  : "border-white/12 bg-[rgba(10,10,10,0.96)] text-white"
+                  : "border-white/12 bg-[var(--overlay-surface)] text-white"
             }`}
           >
             <div className="flex items-start justify-between gap-3">
@@ -6020,12 +5864,12 @@ export function BridgeApp() {
                 {notification.message ? (
                   <div
                     className={`mt-2 overflow-y-auto whitespace-pre-wrap break-words text-sm leading-6 ${
-                      notification.message.length > 180 ? "max-h-48" : ""
+                      notification.message.length > 180 ? "max-h-24" : ""
                     } ${
                       notification.tone === "success" ? "text-black/76" : "text-white/86"
                     }`}
                   >
-                    {notification.message}
+                    {formatExecutionCopy(notification.message)}
                   </div>
                 ) : null}
               </div>

@@ -47,7 +47,7 @@ export async function GET() {
     return NextResponse.json(
       {
         error:
-          error instanceof Error ? error.message : "Failed to fetch Stargate token details.",
+          error instanceof Error ? error.message : "Failed to fetch token details.",
       },
       { status: 500 },
     );

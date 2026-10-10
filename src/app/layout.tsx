@@ -16,9 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Earthbound Stargate Transfer",
+  title: "Earthbound | Cross-chain Bridge",
   description:
-    "A black-and-white Stargate-aligned transfer surface that reuses official chain and token data while lazy-loading balances only after token selection.",
+    "Earthbound is an independently operated cross-chain bridge for transferring assets across networks.",
 };
 
 export default async function RootLayout({
