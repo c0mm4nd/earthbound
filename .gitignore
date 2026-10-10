@@ -42,3 +42,8 @@ next-env.d.ts
 
 .agents/
 .claude/
+
+# Local internal documentation and audit records
+/AGENTS.md
+/CLAUDE.md
+/reports/
