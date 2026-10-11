@@ -33,3 +33,11 @@ assert.ok(migrationSource.getItem(key), 'Failed durable write must retain legacy
 assert.equal(loadExecutionHistory(durable, { getItem: () => { throw Error('Session access disabled'); } })[0].id, item.id);
 for (const value of ['broken', '{}', '[null,1,{"id":"bad"}]']) assert.equal(parseExecutionHistory(value).length, 0);
 console.log('Execution history: migration, new-tab restoration, repeated loads, latest-update merging, interrupted Solana recovery, size limit, corrupt data, and storage failures passed.');
+
+const ccipItem = { ...item, solanaSubmission: undefined, phase: 'running', ccipSubmission: { chainId: 1, hash: '0x' + '1'.repeat(64), confirmed: false } };
+assert.equal(recoverExecutionHistory([ccipItem])[0].phase, 'pending');
+assert.equal(recoverExecutionHistory([ccipItem])[0].transferStatus, 'CONFIRMATION_PENDING');
+assert.equal(recoverExecutionHistory([{ ...ccipItem, ccipSubmission: { ...ccipItem.ccipSubmission, confirmed: true } }])[0].transferStatus, 'PENDING');
+assert.equal(parseExecutionHistory(JSON.stringify([ccipItem])).length, 1);
+assert.equal(parseExecutionHistory(JSON.stringify([{ ...ccipItem, ccipSubmission: { hash: 'invalid' } }])).length, 0);
+console.log('CCIP interrupted send and settlement recovery passed.');

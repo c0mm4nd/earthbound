@@ -60,7 +60,7 @@ export function normalizeCcipCatalog(chainResponse: unknown, tokenResponse: unkn
           name: String(chain.displayName), shortName: String(chain.displayName),
           nativeCurrency: { ...viemChain!.nativeCurrency, chainKey, address: "0x0000000000000000000000000000000000000000" },
         }),
-        ccip: { selectorName: chain.internalId, router: chain.router },
+        ccip: { selectorName: chain.internalId, router: chain.router, selector: typeof chain.selector === "string" ? chain.selector : undefined },
       };
       chains.push(normalized);
       chainByDirectoryId.set(directoryId, normalized);

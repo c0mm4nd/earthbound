@@ -4,7 +4,9 @@ export type ExecutionHistoryItem = {
   id: string;
   quoteId: string;
   executionKey?: string;
+  ccipTransferKey?: string;
   solanaSubmission?: SolanaSubmission;
+  ccipSubmission?: { chainId: number; hash: string; confirmed: boolean };
   phase: "running" | "pending" | "success" | "error";
   createdAt: number;
   updatedAt: number;
@@ -41,6 +43,7 @@ export function parseExecutionHistory(serialized: string | null): ExecutionHisto
       if (!strings.every((key) => typeof item[key] === "string") || !Number.isFinite(item.createdAt) || !Number.isFinite(item.updatedAt)) return false;
       if (!["running", "pending", "success", "error"].includes(item.phase)) return false;
       if (item.solanaSubmission && typeof item.solanaSubmission.signature !== "string") return false;
+      if (item.ccipSubmission && (!Number.isSafeInteger(item.ccipSubmission.chainId) || !/^0x[0-9a-f]{64}$/i.test(item.ccipSubmission.hash) || typeof item.ccipSubmission.confirmed !== "boolean")) return false;
       return true;
     });
   } catch { return []; }
@@ -71,9 +74,9 @@ export function loadExecutionHistory(storage: Storage, legacyStorage: Storage): 
 export function recoverExecutionHistory(items: ExecutionHistoryItem[]): ExecutionHistoryItem[] {
   return items.map((item) => item.phase === "running" ? {
     ...item,
-    phase: item.solanaSubmission ? "pending" : "error",
-    transferStatus: item.solanaSubmission ? "CONFIRMATION_PENDING" : undefined,
+    phase: item.solanaSubmission || item.ccipSubmission ? "pending" : "error",
+    transferStatus: item.ccipSubmission?.confirmed ? "PENDING" : item.solanaSubmission || item.ccipSubmission ? "CONFIRMATION_PENDING" : undefined,
     currentStep: undefined,
-    error: item.solanaSubmission ? "Check the submitted transaction before sending again." : "Execution was interrupted. Check your wallet activity before retrying.",
+    error: item.solanaSubmission || item.ccipSubmission ? "Check the submitted transaction before sending again." : "Execution was interrupted. Check your wallet activity before retrying.",
   } : item);
 }

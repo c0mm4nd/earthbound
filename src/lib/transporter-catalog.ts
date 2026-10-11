@@ -43,8 +43,12 @@ export function mergeTransporterCatalog(directory: CcipCatalog, config: Record<s
           shortName: key === "mainnet" ? "Ethereum" : key[0].toUpperCase() + key.slice(1),
           nativeCurrency: { ...network.nativeCurrency, chainKey, address: network.chainType === "EVM" ? "0x0000000000000000000000000000000000000000" : "native" },
         }),
-        ccip: { selectorName: network.selectorName, router: network.router },
+        ccip: { selectorName: network.selectorName, router: network.router, selector: network.selector },
       };
+      chains.set(network.selectorName, chain);
+    }
+    if (!chain.ccip.selector && network.selector) {
+      chain = { ...chain, ccip: { ...chain.ccip, selector: network.selector } };
       chains.set(network.selectorName, chain);
     }
     byNetwork.set(key, chain);

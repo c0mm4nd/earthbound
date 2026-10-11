@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     if (body?.provider === "ccip" || (typeof body?.quoteId === "string" && body.quoteId.startsWith("ccip:"))) {
-      return NextResponse.json({ error: "CCIP currently supports quotes only." }, { status: 400 });
+      return NextResponse.json({ error: "CCIP uses wallet transactions and does not accept off-chain signatures." }, { status: 400 });
     }
     const apiKey = request.headers.get("x-bridge-api-key");
     const provider = (body.provider === "layerzero"

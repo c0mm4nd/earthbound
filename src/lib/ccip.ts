@@ -2,7 +2,7 @@ import { formatUnits, isAddress } from "viem";
 import type { BridgeChain, BridgeQuoteResponse, BridgeToken, QuoteFee } from "./bridge-types";
 
 export interface CcipChain extends BridgeChain {
-  ccip: { selectorName: string; router: string };
+  ccip: { selectorName: string; router: string; selector?: string };
 }
 
 export interface CcipCatalog {
@@ -18,6 +18,11 @@ export interface CcipQuoteRequest {
   dstTokenAddress: string;
   dstWalletAddress: string;
   amount: string;
+}
+
+export function ccipTransferKey(request: CcipQuoteRequest, sender: string) {
+  return JSON.stringify([request.srcChainKey, request.dstChainKey, request.srcTokenAddress.toLowerCase(), request.dstTokenAddress.toLowerCase(),
+    BigInt(request.amount).toString(), request.dstWalletAddress.toLowerCase(), sender.toLowerCase()]);
 }
 
 // Hex addresses are case insensitive; Solana addresses must retain their case.
@@ -102,6 +107,12 @@ export function normalizeCcipQuote(
   const { srcChain, dstChain, srcToken, dstToken, amount } = resolveCcipQuote(catalog, request);
   if (!data || typeof data !== "object" || !("ccipFee" in data)) throw new Error("CCIP returned an invalid fee estimate.");
   const nativeFee = unsignedAmount(data.ccipFee, "CCIP fee");
+  // Review a 1% fee ceiling, but send only the current router fee.
+  const maxNativeFee = (nativeFee * BigInt(101) + BigInt(99)) / BigInt(100);
+  const validSelector = (value?: string) => value && /^\d{1,20}$/.test(value) && BigInt(value) > BigInt(0) && BigInt(value) < BigInt(2) ** BigInt(64);
+  if (!validSelector(srcChain.ccip.selector) || !validSelector(dstChain.ccip.selector) || !isAddress(srcChain.ccip.router)) {
+    throw new Error("CCIP execution configuration is unavailable for this route. Try again shortly.");
+  }
   const transferFee = "tokenTransferFee" in data ? data.tokenTransferFee : undefined;
   if (transferFee != null && (typeof transferFee !== "object" || Array.isArray(transferFee))) throw new Error("Invalid CCIP transfer fee.");
   const deducted = transferFee && "feeDeducted" in transferFee ? unsignedAmount(transferFee.feeDeducted, "CCIP transfer fee") : BigInt(0);
@@ -110,9 +121,9 @@ export function normalizeCcipQuote(
   if (dstAmount === BigInt(0)) throw new Error("Amount is too small for the destination token precision.");
   const native = srcChain.nativeCurrency;
   const fees: QuoteFee[] = [{
-    type: "CCIP", amount: nativeFee.toString(), chainKey: srcChain.chainKey,
+    type: "CCIP", amount: maxNativeFee.toString(), chainKey: srcChain.chainKey,
     tokenAddress: native.address, decimals: native.decimals, symbol: native.symbol,
-    name: "CCIP fee", description: "CCIP fee; source-chain transaction gas is additional.",
+    name: "Maximum CCIP fee", description: "Includes a 1% fee ceiling. Only the current fee is sent; source network gas is additional.",
   }];
   if (deducted > BigInt(0)) fees.push({
     type: "TOKEN_TRANSFER", amount: deducted.toString(), chainKey: srcChain.chainKey,
@@ -120,9 +131,14 @@ export function normalizeCcipQuote(
     name: "Token transfer fee", description: "Deducted from the transferred amount.",
   });
   return { quotes: [{
-    id: `ccip:${bridgeTokenKey(srcToken)}:${bridgeTokenKey(dstToken)}:${amount}:${Date.now()}`,
-    provider: "ccip", execution: "quote-only",
-    srcAmount: amount.toString(), dstAmount: dstAmount.toString(), dstAmountMin: dstAmount.toString(),
+    id: `ccip:${srcChain.ccip.selector}:${dstChain.ccip.selector}:${Date.now()}`,
+    provider: "ccip",
+    ccip: {
+      router: srcChain.ccip.router, sourceSelector: srcChain.ccip.selector!, destinationSelector: dstChain.ccip.selector!,
+      sourceChainId: srcChain.chainId, sourceToken: srcToken.address, destinationToken: dstToken.address,
+      receiver: request.dstWalletAddress, nativeFee: nativeFee.toString(), maxNativeFee: maxNativeFee.toString(), quotedAt: Date.now(),
+    },
+    srcAmount: amount.toString(), dstAmount: dstAmount.toString(),
     routeSteps: [{ type: "CCIP", srcChainKey: srcChain.chainKey, dstChainKey: dstChain.chainKey }],
     userSteps: [], fees,
     duration: estimatedMilliseconds && Number.isFinite(estimatedMilliseconds) && estimatedMilliseconds > 0

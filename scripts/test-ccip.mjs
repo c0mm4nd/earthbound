@@ -20,8 +20,8 @@ const baseChains = [
 ];
 const chains = { data: {
   evm: {
-    1: { chainId: 1, displayName: "Ethereum", internalId: "ethereum-mainnet", router: address(10), supported: true },
-    8453: { chainId: 8453, displayName: "Base", internalId: "ethereum-mainnet-base-1", router: address(11), supported: true },
+    1: { chainId: 1, displayName: "Ethereum", internalId: "ethereum-mainnet", selector: "5009297550715157269", router: address(10), supported: true },
+    8453: { chainId: 8453, displayName: "Base", internalId: "ethereum-mainnet-base-1", selector: "15971525489660198786", router: address(11), supported: true },
   },
   solana: { solana: { chainId: "solana", displayName: "Solana", internalId: "solana-mainnet", router: "router", supported: true } },
 } };
@@ -71,7 +71,7 @@ function load(name) {
 }
 
 const { normalizeCcipCatalog, getCcipCatalog, getCcipQuote } = load("ccip-api");
-const { bridgeTokenKey, mergeBridgeTokens, ccipDestinationTokens, ccipFeeQuery, normalizeCcipQuote, supportsCcipPair } = load("ccip");
+const { bridgeTokenKey, ccipTransferKey, mergeBridgeTokens, ccipDestinationTokens, ccipFeeQuery, normalizeCcipQuote, supportsCcipPair } = load("ccip");
 const { parseTransporterConfig, mergeTransporterCatalog } = load("transporter-catalog");
 const catalog = normalizeCcipCatalog(chains, tokens, baseChains);
 const parsedConfig = parseTransporterConfig(transporterHtml);
@@ -99,14 +99,18 @@ assert.equal(merged.find(t => t.address === address(1)).price.usd, 2);
 assert.equal(merged.find(t => t.address === address(1)).icon, "icon.svg");
 
 const request = { srcChainKey: "ethereum", dstChainKey: "base", srcTokenAddress: address(1), dstTokenAddress: address(2), dstWalletAddress: address(9), amount: "1234567890123456789" };
+assert.equal(ccipTransferKey(request, address(9)), ccipTransferKey({ ...request, amount: "0" + request.amount, srcTokenAddress: request.srcTokenAddress.toUpperCase() }, address(9).toUpperCase()), "same transfer is identified independently of amount padding and address case");
 assert.equal(ccipFeeQuery(catalog, request).get("amount"), "1.234567890123456789", "API accepts human units without float conversion");
 const quote = normalizeCcipQuote(catalog, request, { ccipFee: "123", tokenTransferFee: { feeDeducted: "1000000000000000" } }, 954000).quotes[0];
 assert.equal(quote.dstAmount, "1233567", "subtract transfer fee before flooring to destination precision");
 assert.equal(quote.fees[0].symbol, "ETH");
 assert.equal(quote.fees[1].amount, "1000000000000000");
 assert.equal(quote.feeUsd, undefined, "unknown USD fee is never treated as zero");
-assert.equal(quote.execution, "quote-only");
+assert.equal(quote.ccip.sourceSelector, "5009297550715157269");
+assert.equal(quote.ccip.maxNativeFee, "125");
+assert.equal(quote.fees[0].amount, "125");
 assert.equal(quote.userSteps.length, 0);
+assert.equal(quote.dstAmountMin, undefined, "CCIP does not enforce a receive minimum on-chain");
 assert.equal(quote.duration.estimated, "954000");
 for (const amount of ["0", "-1", "1.2", "1e18", "9".repeat(79)]) assert.throws(() => ccipFeeQuery(catalog, { ...request, amount }));
 assert.throws(() => ccipFeeQuery(catalog, { ...request, dstWalletAddress: address(0) }), /destination address/);
@@ -144,6 +148,7 @@ function loadRoute(name) {
     require: id => {
       if (id === "next/server") return { NextResponse: { json: (...args) => Response.json(...args) } };
       if (id === "@/lib/ccip") return load("ccip");
+      if (id === "@/lib/ccip-status") return load("ccip-status");
       if (id === "@/lib/ccip-api") return { getCcipCatalog: async () => { if (!ccipAvailable) throw new Error("offline"); return catalog; } };
       if (id === "@/lib/layerzero") return { fetchLayerZeroJson: async () => {
         baseCalls++;
@@ -184,5 +189,5 @@ for (const route of ["build-user-steps", "submit-signature"]) {
 }
 response = await loadRoute("status/[quoteId]").GET(new Request("https://earthbound.test/api/bridge/status/ccip:test?provider=ccip"), { params: Promise.resolve({ quoteId: "ccip:test" }) });
 assert.equal(response.status, 400);
-assert.equal(baseCalls, callsBeforeGuard, "CCIP estimates never fall through to another provider's execution or tracking API");
-console.log("CCIP catalog, route validation, fee precision, caching, failure isolation and quote-only API guards passed.");
+assert.equal(baseCalls, callsBeforeGuard, "CCIP requests never fall through to another provider's execution or tracking API");
+console.log("CCIP catalog, route validation, fee precision, caching, failure isolation and provider isolation guards passed.");

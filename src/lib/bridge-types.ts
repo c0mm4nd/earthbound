@@ -115,7 +115,18 @@ export type QuoteUserStep =
 
 export interface BridgeQuote {
   provider?: BridgeApiProvider;
-  execution?: "quote-only";
+  ccip?: {
+    router: string;
+    sourceSelector: string;
+    destinationSelector: string;
+    sourceChainId: number;
+    sourceToken: string;
+    destinationToken: string;
+    receiver: string;
+    nativeFee: string;
+    maxNativeFee: string;
+    quotedAt: number;
+  };
   directOft?: { meshKey: string; nativeFee: string };
   id: string;
   feeUsd?: string;

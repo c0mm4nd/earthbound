@@ -5,6 +5,7 @@ import {
   fetchStargateV2ApiJson,
 } from "@/lib/layerzero";
 import type { BridgeApiProvider } from "@/lib/bridge-types";
+import { ccipStatusQuery, getCcipStatus } from "@/lib/ccip-status";
 
 type RouteContext = {
   params: Promise<{
@@ -17,7 +18,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const { quoteId } = await context.params;
     const searchParams = new URL(request.url).searchParams;
     if (searchParams.get("provider") === "ccip" || quoteId.startsWith("ccip:")) {
-      return NextResponse.json({ error: "CCIP estimates do not create a tracked transfer. Track sent transfers on Transporter." }, { status: 400 });
+      try { ccipStatusQuery(quoteId, searchParams.get("txHash")); }
+      catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid CCIP transfer." }, { status: 400 }); }
+      try { return NextResponse.json(await getCcipStatus(quoteId, searchParams.get("txHash"))); }
+      catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "CCIP tracking unavailable." }, { status: 502 }); }
     }
     const apiKey = request.headers.get("x-bridge-api-key");
     const txHash = searchParams.get("txHash");

@@ -66,7 +66,8 @@ import {
 } from "@/lib/bridge-chain-utils";
 import { assertExecutionPlan, assertSuccessfulEvmReceipt } from "@/lib/execution-safety";
 import { buildCustomOftQuote } from "@/lib/custom-oft-quote";
-import { bridgeTokenKey, supportsCcipPair } from "@/lib/ccip";
+import { bridgeTokenKey, ccipTransferKey, supportsCcipPair } from "@/lib/ccip";
+import { executeCcipTransfer } from "@/lib/ccip-execution";
 import { buildDirectOftQuote, supportsDirectOftRoute } from "@/lib/direct-oft";
 import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
 import { checkSolanaSubmission, fetchExternalWalletBalance } from "@/lib/bridge-wallets";
@@ -256,6 +257,7 @@ function formatTransferStatus(status: string) {
     EXPIRED: "Transaction expired",
     UNKNOWN: "Status unavailable",
     PENDING: "Transfer pending",
+    ACTION_REQUIRED: "Needs attention",
     INFLIGHT: "Transfer in progress",
   };
   return labels[status] ?? status.replace(/[_-]+/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase());
@@ -1365,7 +1367,7 @@ async function pollTransferStatus(
     searchParams.set("provider", provider);
     const query = searchParams.toString() ? `?${searchParams.toString()}` : "";
     const status = await fetchJson<BridgeStatusResponse>(
-      `/api/bridge/status/${quoteId}${query}`,
+      `/api/bridge/status/${encodeURIComponent(quoteId)}${query}`,
       {
         headers: getBridgeApiRequestHeaders(provider, apiKey),
       },
@@ -1373,7 +1375,7 @@ async function pollTransferStatus(
     latest = status;
     onUpdate?.(status);
 
-    if (TRANSFER_TERMINAL_STATUSES.has(status.status)) {
+    if (TRANSFER_TERMINAL_STATUSES.has(status.status) || status.status === "ACTION_REQUIRED") {
       return status;
     }
 
@@ -2416,6 +2418,7 @@ export function BridgeApp() {
     dstToken: searchParams.get("dstToken") ?? "",
     applied: false,
   });
+  const [urlSelectionReady, setUrlSelectionReady] = useState(false);
   const [srcChainKey, setSrcChainKey] = useState("");
   const [dstChainKey, setDstChainKey] = useState("");
   const [srcTokenAddress, setSrcTokenAddress] = useState("");
@@ -2481,7 +2484,7 @@ export function BridgeApp() {
   >();
   const [isExternalWalletBalanceLoading, setIsExternalWalletBalanceLoading] = useState(false);
   const customOftImportInputRef = useRef<HTMLInputElement | null>(null);
-  const skipDstTokenResetRef = useRef(false);
+  const skipDstTokenResetRef = useRef<string | null>(null);
   const balanceSwitchAttemptRef = useRef<string | null>(null);
   const notificationTimeoutsRef = useRef(new Map<string, number>());
   const quoteRequestIdRef = useRef(0);
@@ -3470,6 +3473,10 @@ export function BridgeApp() {
       const client = getPublicClient(wagmiConfig, { chainId: chain.chainId });
       if (!client) throw new Error("No RPC configured for the source chain.");
       await client.call({ account: transaction.from, to: transaction.to, data: transaction.data, value: transaction.value ?? BigInt(0) });
+      assertCurrentExecutionContext();
+      const afterSimulation = getAccount(wagmiConfig);
+      if (afterSimulation.address?.toLowerCase() !== transaction.from.toLowerCase() || afterSimulation.chainId !== chain.chainId)
+        throw new Error("Wallet account or network changed during simulation. Review the transfer again.");
       return sendTransaction(wagmiConfig, {
         account: transaction.from,
         chainId: chain.chainId as SupportedChainId,
@@ -3585,6 +3592,40 @@ export function BridgeApp() {
       const error = result.outcome === "confirmed" ? undefined : new SolanaConfirmationError(result.outcome, item.solanaSubmission, result.detail).message;
       updateExecutionHistoryItem(item.id, { phase, transferStatus, error, currentStep: result.outcome === "confirmed" ? "Source confirmed. Track destination settlement on LayerZeroScan." : undefined });
       setExecutionState((current) => current.activeHistoryId === item.id ? { ...current, phase, transferStatus, error } : current);
+    } finally { setCheckingHistoryId(null); }
+  }
+
+  function applyCcipStatus(historyId: string, status: BridgeStatusResponse) {
+    const existing = executionHistoryRef.current.find(item => item.id === historyId);
+    if (existing?.phase === "success" && status.status !== "COMPLETED") return;
+    if (existing?.phase === "error" && ["FAILED", "CANCELLED"].includes(existing.transferStatus ?? "") && status.status !== "COMPLETED") return;
+    const phase = status.status === "COMPLETED" ? "success" : status.status === "FAILED" || status.status === "CANCELLED" ? "error" : "pending";
+    const patch = { phase, transferStatus: status.status, explorerUrl: status.explorerUrl ?? existing?.explorerUrl, error: status.error,
+      currentStep: status.substatus ?? (phase === "success" ? "CCIP transfer completed." : undefined) } as const;
+    updateExecutionHistoryItem(historyId, patch);
+    setExecutionState(current => current.activeHistoryId === historyId ? { ...current, ...patch } : current);
+  }
+
+  async function recheckCcipHistory(item: ExecutionHistoryItem) {
+    if (!item.ccipSubmission || checkingHistoryId) return;
+    setCheckingHistoryId(item.id);
+    try {
+      if (!item.ccipSubmission.confirmed) {
+        const client = getPublicClient(wagmiConfig, { chainId: item.ccipSubmission.chainId });
+        if (!client) throw new Error("The source network RPC is unavailable. Check RPC settings and retry status.");
+        const receipt = await client.getTransactionReceipt({ hash: item.ccipSubmission.hash as Hex });
+        if (receipt.status !== "success") {
+          applyCcipStatus(item.id, { status: "FAILED", error: "The source transaction reverted. No CCIP transfer was sent." });
+          return;
+        }
+        updateExecutionHistoryItem(item.id, { ccipSubmission: { ...item.ccipSubmission, confirmed: true } });
+      }
+      const params = new URLSearchParams({ provider: "ccip", txHash: item.ccipSubmission.hash });
+      const status = await fetchJson<BridgeStatusResponse>(`/api/bridge/status/${encodeURIComponent(item.quoteId)}?${params}`);
+      applyCcipStatus(item.id, status);
+    } catch {
+      // A missing receipt, timeout or indexer outage is not evidence of failure.
+      updateExecutionHistoryItem(item.id, { phase: "pending", error: "Confirmation or tracking is not available yet. Check status again before sending another transfer." });
     } finally { setCheckingHistoryId(null); }
   }
 
@@ -4017,14 +4058,16 @@ export function BridgeApp() {
     if (srcToken) {
       // Setting srcTokenAddress triggers the [srcTokenAddress] cleanup effect which
       // would clear dstTokenAddress. Use the skip flag to suppress that one-time reset.
-      if (dstToken) skipDstTokenResetRef.current = true;
+      if (dstToken) skipDstTokenResetRef.current = srcToken;
       setSrcTokenAddress(srcToken);
     }
     if (dstToken) setDstTokenAddress(dstToken);
+    setUrlSelectionReady(true);
   }, [supportedChains, tokensQuery.data]);
 
   // Sync selected chain/token state to URL
   useEffect(() => {
+    if (!urlSelectionReady) return;
     const params = new URLSearchParams();
     if (srcChainKey) params.set("srcChain", srcChainKey);
     if (dstChainKey) params.set("dstChain", dstChainKey);
@@ -4033,7 +4076,7 @@ export function BridgeApp() {
 
     const search = params.toString();
     router.replace(`${pathname}${search ? `?${search}` : ""}`, { scroll: false });
-  }, [srcChainKey, dstChainKey, srcTokenAddress, dstTokenAddress, router, pathname]);
+  }, [srcChainKey, dstChainKey, srcTokenAddress, dstTokenAddress, router, pathname, urlSelectionReady]);
 
   useEffect(() => {
     isQuotingRef.current = isQuoting;
@@ -4147,8 +4190,9 @@ export function BridgeApp() {
   useEffect(() => {
     // Skip the dstTokenAddress reset when both src and dst tokens are being
     // applied together from initial URL params (skipDstTokenResetRef is set).
-    if (skipDstTokenResetRef.current) {
-      skipDstTokenResetRef.current = false;
+    if (skipDstTokenResetRef.current && !srcTokenAddress) return;
+    if (skipDstTokenResetRef.current === srcTokenAddress) {
+      skipDstTokenResetRef.current = null;
     } else {
       setDstTokenAddress("");
     }
@@ -4398,7 +4442,10 @@ export function BridgeApp() {
   const executionLockRef = useRef(false);
   const executionContext = JSON.stringify([srcChainKey, dstChainKey, srcTokenAddress, dstTokenAddress,
     amountInput, destinationAddress, sourceWalletAddress, useApiRoutes, selectedCustomOftConfigId]);
-  const unresolvedSolanaTransfer = executionHistory.find((item) => item.executionKey === executionContext && item.phase === "pending" && item.solanaSubmission);
+  const currentCcipTransferKey = quoteRequestState.ready && sourceWalletAddress ? ccipTransferKey(quoteRequestState.payload, sourceWalletAddress) : undefined;
+  const unresolvedSubmittedTransfer = executionHistory.find(item =>
+    (item.phase === "pending" || item.phase === "running") &&
+    ((item.ccipSubmission && item.ccipTransferKey === currentCcipTransferKey) || (item.solanaSubmission && item.executionKey === executionContext)));
   const executionContextRef = useRef(executionContext);
   useEffect(() => { executionContextRef.current = executionContext; }, [executionContext]);
   function assertCurrentExecutionContext() {
@@ -4407,13 +4454,12 @@ export function BridgeApp() {
   }
 
   async function handleExecuteQuote() {
-    if (quote?.execution === "quote-only" || quote?.provider === "ccip") return;
     if (!quote || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken || !quoteRequestState.ready || quotedRequestKey !== quoteRequestKey) {
       return;
     }
 
     if (executionLockRef.current) return;
-    if (unresolvedSolanaTransfer) {
+    if (unresolvedSubmittedTransfer) {
       pushExecutionNotification({ tone: "neutral", title: "Transaction already submitted", message: "Use Check status in Transfers before sending this transfer again." });
       return;
     }
@@ -4423,6 +4469,7 @@ export function BridgeApp() {
       id: historyId,
       quoteId: quote.id,
       executionKey: executionContext,
+      ccipTransferKey: quote.provider === "ccip" ? currentCcipTransferKey : undefined,
       phase: "running",
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -4438,7 +4485,7 @@ export function BridgeApp() {
       srcAmount: `${formatTokenAmount(quote.srcAmount, selectedSrcToken.decimals)} ${selectedSrcTokenSymbol}`,
       expectedDstAmount: `${formatTokenAmount(quote.dstAmount, selectedDstToken.decimals)} ${selectedDstTokenSymbol}`,
       minimumDstAmount:
-        quote.dstAmountMin && selectedDstToken
+        quote.provider !== "ccip" && quote.dstAmountMin && selectedDstToken
           ? `${formatTokenAmount(quote.dstAmountMin, selectedDstToken.decimals)} ${selectedDstTokenSymbol}`
           : null,
       destinationAddress,
@@ -4458,6 +4505,59 @@ export function BridgeApp() {
 
     try {
       let lastTxHash: string | undefined;
+      if (quote.provider === "ccip") {
+        if (!address || sourceChainType !== "EVM") throw new Error("Connect an EVM source wallet for CCIP.");
+        if (chainId !== srcChain.chainId) await switchEvmChain(srcChain);
+        const submitted = (hash: string, confirmed: boolean) => {
+          const transferStatus = confirmed ? "PENDING" : "CONFIRMATION_PENDING";
+          updateExecutionHistoryItem(historyId, { txHash: hash, ccipSubmission: { chainId: srcChain.chainId, hash, confirmed }, transferStatus,
+            currentStep: confirmed ? "Source confirmed. Waiting for CCIP delivery." : "CCIP transaction submitted. Waiting for source confirmation." });
+          setExecutionState(current => ({ ...current, txHash: hash, transferStatus }));
+        };
+        lastTxHash = await executeCcipTransfer(quote, quoteRequestState.payload, srcChain, address, {
+          assertContext: () => {
+            assertCurrentExecutionContext();
+            const current = getAccount(wagmiConfig);
+            if (current.address?.toLowerCase() !== address.toLowerCase() || current.chainId !== srcChain.chainId) throw new Error("Wallet account or network changed. Review the transfer again.");
+          },
+          refresh: async () => {
+            const result = await fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
+              method: "POST", body: JSON.stringify({ ...quoteRequestState.payload, provider: "ccip" }),
+            });
+            if (!result.quotes[0]) throw new Error("CCIP returned no available route.");
+            return result.quotes[0];
+          },
+          read: args => readEvmContractForChain<bigint>({ ...args, chain: srcChain }),
+          send: tx => sendEvmTransactionForChain(srcChain, { ...tx, from: address }),
+          wait: async (hash, kind) => {
+            const receipt = await waitForTransactionReceipt(wagmiConfig, {
+              chainId: srcChain.chainId, hash: hash as Hex,
+              onReplaced: ({ reason, transactionReceipt }) => {
+                if (kind === "bridge" && reason === "repriced") submitted(transactionReceipt.transactionHash, false);
+                if (reason !== "repriced") {
+                  if (kind === "bridge" && reason === "cancelled") applyCcipStatus(historyId, { status: "CANCELLED", error: "Source transaction was cancelled in the wallet." });
+                  throw new Error("Transaction was cancelled or replaced. Check wallet activity before retrying.");
+                }
+              },
+            });
+            if (kind === "bridge" && receipt.status !== "success") applyCcipStatus(historyId, { status: "FAILED", error: "Source transaction reverted. No CCIP transfer was sent." });
+            assertSuccessfulEvmReceipt(receipt);
+            return receipt.transactionHash;
+          },
+          submitted,
+          step: currentStep => updateExecutionHistoryItem(historyId, { currentStep }),
+        });
+        pushExecutionNotification({ tone: "neutral", title: "CCIP transfer submitted", message: "Source confirmed. Tracking destination delivery." });
+        applyCcipStatus(historyId, { status: "PENDING", substatus: "Source confirmed. Waiting for CCIP delivery." });
+        void pollTransferStatus(quote.id, "ccip", undefined, lastTxHash, status => applyCcipStatus(historyId, status)).then(status => {
+          if (status?.status === "COMPLETED") pushExecutionNotification({ tone: "success", title: "CCIP transfer completed", message: `${initialHistoryItem.srcAmount} → ${initialHistoryItem.expectedDstAmount}` });
+        }).catch(() => {
+          applyCcipStatus(historyId, { status: "PENDING", substatus: "CCIP tracking is temporarily unavailable. Use Check status in Transfers to continue." });
+        });
+        void erc20BalanceQuery.refetch();
+        void nativeBalanceQuery.refetch();
+        return;
+      }
       const isDirectOft = quote.routeSteps.some((step) => step.type === "DIRECT_OFT");
       const refreshDirectQuote = async () => {
         assertCurrentExecutionContext();
@@ -4479,7 +4579,7 @@ export function BridgeApp() {
         });
         const builtUserStepsResponse = await buildUserSteps(
           quote.id,
-          bridgeApiProvider,
+          quote.provider ?? bridgeApiProvider,
           layerZeroApiKey,
         );
 
@@ -4688,7 +4788,7 @@ export function BridgeApp() {
       });
       const transferStatus = await pollTransferStatus(
         quote.id,
-        bridgeApiProvider,
+        quote.provider ?? bridgeApiProvider,
         layerZeroApiKey,
         lastTxHash,
         (status) => {
@@ -4768,6 +4868,15 @@ export function BridgeApp() {
       }
     } catch (error) {
       const errorMessage = getErrorMessage(error);
+      const ccipRecord = executionHistoryRef.current.find(item => item.id === historyId);
+      if (ccipRecord?.ccipSubmission) {
+        const phase = ccipRecord.phase === "error" ? "error" : "pending";
+        const message = phase === "pending" ? "CCIP transaction was submitted. Use Check status before sending again." : errorMessage;
+        updateExecutionHistoryItem(historyId, { phase, error: message, currentStep: undefined });
+        setExecutionState(current => ({ ...current, phase, error: message, transferStatus: ccipRecord.transferStatus }));
+        pushExecutionNotification({ tone: phase === "pending" ? "neutral" : "danger", title: phase === "pending" ? "Confirmation pending" : "Execution stopped", message });
+        return;
+      }
       const submittedHash = error && typeof error === "object" && "transactionHash" in error && typeof error.transactionHash === "string" ? error.transactionHash : undefined;
       const pending = error instanceof SolanaConfirmationError && error.outcome === "pending";
       const transferStatus = error instanceof SolanaConfirmationError ? (pending ? "CONFIRMATION_PENDING" : error.outcome === "expired" ? "EXPIRED" : "FAILED") : undefined;
@@ -4925,7 +5034,7 @@ export function BridgeApp() {
     }
 
     if (executionLockRef.current) return;
-    if (unresolvedSolanaTransfer) {
+    if (unresolvedSubmittedTransfer) {
       pushExecutionNotification({ tone: "neutral", title: "Transaction already submitted", message: "Use Check status in Transfers before sending this transfer again." });
       return;
     }
@@ -5109,9 +5218,10 @@ export function BridgeApp() {
       ? formatTokenAmount(quote.dstAmount, selectedDstToken.decimals)
       : "0.00";
   const customOftDestinationPreviewAmount = amountInput.trim() || "0.00";
+  const receiveAmount = quote?.provider === "ccip" ? quote.dstAmount : quote?.dstAmountMin;
   const minimumReceiveCopy =
-    quote && selectedDstToken && quote.dstAmountMin
-      ? `${formatTokenAmount(quote.dstAmountMin, selectedDstToken.decimals)} ${selectedDstTokenSymbol}`
+    selectedDstToken && receiveAmount
+      ? `${formatTokenAmount(receiveAmount, selectedDstToken.decimals)} ${selectedDstTokenSymbol}`
       : null;
   const refreshCountdownSeconds =
     canRequestQuote && lastQuoteUpdatedAt
@@ -5119,8 +5229,8 @@ export function BridgeApp() {
       : null;
   const canExecuteQuote =
     Boolean(quote) &&
-    quote?.execution !== "quote-only" &&
-    !unresolvedSolanaTransfer &&
+    (!quote?.ccip || sourceChainHasConfiguredWallet) &&
+    !unresolvedSubmittedTransfer &&
     !isQuoting &&
     !quoteError &&
     executionState.phase !== "running" &&
@@ -5129,7 +5239,7 @@ export function BridgeApp() {
   const canExecuteCustomOft =
     isCustomOftSource &&
     customOftRequestState.ready &&
-    !unresolvedSolanaTransfer &&
+    !unresolvedSubmittedTransfer &&
     executionState.phase !== "running" &&
     sourceWalletConnected &&
     canExecuteSelectedSourceChain;
@@ -5158,7 +5268,9 @@ export function BridgeApp() {
         ? "Using default API routes. Add an API key to enable Direct API."
         : null;
   const executionCapabilityCopy =
-    activeSrcChain && !canExecuteSelectedSourceChain
+    quote?.ccip && !sourceChainHasConfiguredWallet
+      ? "CCIP sending requires a configured RPC for the source network."
+      : activeSrcChain && !canExecuteSelectedSourceChain
       ? `${getChainTypeDisplayLabel(activeSrcChain.chainType)} source execution is not available in this build yet.`
       : null;
   function handleFillMax() {
@@ -5397,8 +5509,8 @@ export function BridgeApp() {
                   </div>
                 ) : null}
 
-                {!isCustomOftSource && quote?.execution === "quote-only" ? (
-                  <p className="mt-3 text-xs text-[var(--muted)]">CCIP estimate only. Source network gas is additional. Continue on Transporter to review and send.</p>
+                {!isCustomOftSource && quote?.provider === "ccip" ? (
+                  <p className="mt-3 text-xs text-[var(--muted)]">Send with CCIP from your wallet. The displayed fee includes a 1% ceiling; only the current fee is sent. Source network gas is additional.</p>
                 ) : null}
                 {[...new Set([...(chainsQuery.data?.warnings ?? []), ...(tokensQuery.data?.warnings ?? []), ...(routeTokensQuery.data?.warnings ?? []), ...quoteWarnings])].map(warning => (
                   <p key={warning} role="status" className="mt-2 text-xs text-amber-200/80">{warning}</p>
@@ -5445,7 +5557,7 @@ export function BridgeApp() {
 
                       <div className="rounded-[1.05rem] border border-white/10 bg-black px-3 py-2.5">
                         <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                          {isCustomOftSource ? "Receive" : quote?.execution === "quote-only" ? "Est. receive" : "Min receive"}
+                          {isCustomOftSource ? "Receive" : quote?.provider === "ccip" ? "Est. receive" : "Min receive"}
                         </p>
                         <p className="mt-1.5 text-xs text-white">
                           {isCustomOftSource ? (
@@ -5508,9 +5620,7 @@ export function BridgeApp() {
                         <span>{isQuoting ? "Quoting" : "Quote"}</span>
                       </button>
                     )}
-                    {!isCustomOftSource && quote?.execution === "quote-only" ? (
-                      <a href="https://app.transporter.io/" target="_blank" rel="noopener noreferrer" className="inline-flex h-9 items-center rounded-full bg-white px-3 text-xs font-semibold text-black hover:bg-white/85">Open Transporter ↗</a>
-                    ) : <button
+                    <button
                       type="button"
                       onClick={() =>
                         isCustomOftSource ? void handleExecuteCustomOft() : void handleExecuteQuote()
@@ -5520,7 +5630,7 @@ export function BridgeApp() {
                     >
                       <SendIcon className="h-3.5 w-3.5" />
                       <span>{executionState.phase === "running" ? "Executing..." : "Execute"}</span>
-                    </button>}
+                    </button>
                   </div>
                   </div>
                 </div>
@@ -5572,7 +5682,6 @@ export function BridgeApp() {
                             <div className="min-w-0">
                               <p className="truncate text-sm font-medium">
                                 {formatQuoteRouteLabel(candidate)}
-                                {candidate.execution === "quote-only" ? <span className="ml-2 text-xs font-normal">Quote only</span> : null}
                               </p>
                               <p
                                 className={`mt-1 text-xs ${
@@ -5747,7 +5856,12 @@ export function BridgeApp() {
                           </button>
                         ) : null}
                         {item.solanaSubmission ? <a className="text-white/70 hover:text-white" href={`https://solscan.io/tx/${item.solanaSubmission.signature}`} target="_blank" rel="noreferrer">Solscan ↗</a> : null}
-                        {item.explorerUrl ? <a className="text-white/70 hover:text-white" href={item.explorerUrl} target="_blank" rel="noreferrer">LayerZeroScan ↗</a> : null}
+                        {item.ccipSubmission && (item.phase === "pending" || item.phase === "running") ? (
+                          <button type="button" disabled={checkingHistoryId !== null || item.phase === "running"} onClick={() => void recheckCcipHistory(item)} className="rounded-full border border-white/15 px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40">
+                            {checkingHistoryId === item.id ? "Checking…" : "Check status"}
+                          </button>
+                        ) : null}
+                        {item.explorerUrl ? <a className="text-white/70 hover:text-white" href={item.explorerUrl} target="_blank" rel="noreferrer">{item.ccipSubmission ? "CCIP Explorer" : "LayerZeroScan"} ↗</a> : null}
                       </div>
                       <details className="mt-2 text-xs">
                         <summary className="cursor-pointer py-1 text-white/50 hover:text-white">Details</summary>
