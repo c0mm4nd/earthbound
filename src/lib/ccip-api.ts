@@ -2,6 +2,8 @@ import { viemChainById } from "./viem-chains-by-id";
 import type { BridgeChain, BridgeToken } from "./bridge-types";
 import { bridgeTokenKey, ccipFeeQuery, normalizeCcipQuote, resolveCcipQuote, type CcipCatalog, type CcipChain, type CcipQuoteRequest } from "./ccip";
 import { mergeTransporterCatalog, parseTransporterConfig } from "./transporter-catalog";
+import { ccipMessageEncoding, ccipNativeFeeToken } from "./ccip-message";
+import { APTOS_MAINNET_API } from "./ccip-aptos";
 
 const DIRECTORY = "https://docs.chain.link/api/ccip/v1";
 const TRANSPORTER = "https://app.transporter.io/api/h";
@@ -22,6 +24,13 @@ function cached<T>(load: () => Promise<T>) {
 
 async function fetchJson(url: string) {
   const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(12_000) });
+  if (!response.ok) throw new Error(`CCIP service unavailable (${response.status}). Try again shortly.`);
+  return response.json() as Promise<unknown>;
+}
+
+async function postJson(url: string, body: unknown) {
+  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body), cache: "no-store", signal: AbortSignal.timeout(20_000) });
   if (!response.ok) throw new Error(`CCIP service unavailable (${response.status}). Try again shortly.`);
   return response.json() as Promise<unknown>;
 }
@@ -52,13 +61,17 @@ export function normalizeCcipCatalog(chainResponse: unknown, tokenResponse: unkn
       const existing = baseChains.find(base => base.chainType === chainType && (family !== "evm" || base.chainId === chain.chainId));
       const viemChain = family === "evm" && typeof chain.chainId === "number" ? viemChainById[chain.chainId] : undefined;
       // Unknown families cannot be safely represented with an EVM numeric chain ID.
-      if (!existing && (!viemChain || viemChain.testnet)) continue;
+      const nonEvm = ({ solana: { chainId: 0, symbol: "SOL", decimals: 9, address: "11111111111111111111111111111111" },
+        aptos: { chainId: 1, symbol: "APT", decimals: 8, address: "0xa" },
+        canton: { chainId: 0, symbol: "CC", decimals: 10, address: "CC" },
+      } as Record<string, { chainId: number; symbol: string; decimals: number; address: string }>)[family];
+      if (!existing && !nonEvm && (!viemChain || viemChain.testnet)) continue;
       const chainKey = existing?.chainKey ?? `ccip-${chain.internalId}`;
       const normalized: CcipChain = {
         ...(existing ?? {
-          chainKey, chainType, chainId: viemChain!.id,
+          chainKey, chainType, chainId: nonEvm?.chainId ?? viemChain!.id,
           name: String(chain.displayName), shortName: String(chain.displayName),
-          nativeCurrency: { ...viemChain!.nativeCurrency, chainKey, address: "0x0000000000000000000000000000000000000000" },
+          nativeCurrency: nonEvm ? { ...nonEvm, name: nonEvm.symbol, chainKey } : { ...viemChain!.nativeCurrency, chainKey, address: "0x0000000000000000000000000000000000000000" },
         }),
         ccip: { selectorName: chain.internalId, router: chain.router, selector: typeof chain.selector === "string" ? chain.selector : undefined },
       };
@@ -133,12 +146,39 @@ export async function getCcipQuote(body: unknown) {
   try { query = ccipFeeQuery(catalog, request); }
   catch (error) { throw new CcipRequestError(error instanceof Error ? error.message : "Invalid CCIP quote request."); }
   const { srcChain, dstChain, srcToken } = resolveCcipQuote(catalog, request);
+  if (srcChain.chainType === "CANTON" || dstChain.chainType === "CANTON") {
+    throw new CcipRequestError("Canton transfers are in development and are not available yet.");
+  }
   const latencyQuery = new URLSearchParams({ sourceChainSelectorName: srcChain.ccip.selectorName, destChainSelectorName: dstChain.ccip.selectorName, sourceTokenAddress: srcToken.address });
   const [fees, latency] = await Promise.all([
-    fetchJson(`${TRANSPORTER}/transporterData/getTotalFeesEstimate?${query}`),
+    srcChain.chainType === "EVM"
+      ? fetchJson(`${TRANSPORTER}/transporterData/getTotalFeesEstimate?${query}`)
+      : getNonEvmFees(srcChain, dstChain, request),
     fetchJson(`${TRANSPORTER}/ccipData/getLaneLatency?${latencyQuery}`).catch(() => null),
   ]);
   // A missing latency estimate must never prevent a valid fee quote.
   const estimate = latency && typeof latency === "object" && "totalMs" in latency && typeof latency.totalMs === "number" ? latency.totalMs : undefined;
   return normalizeCcipQuote(catalog, request, fees, estimate);
+}
+
+async function getNonEvmFees(src: CcipChain, dst: CcipChain, request: CcipQuoteRequest) {
+  const message = { ...ccipMessageEncoding(src.chainType, dst.chainType, request.dstWalletAddress), data: "0x",
+    tokenAmounts: [{ token: request.srcTokenAddress, amount: request.amount }], feeToken: ccipNativeFeeToken(src.chainType) };
+  let fee: unknown;
+  if (src.chainType === "APTOS") {
+    // The public Transporter adapter currently fails Aptos getFeeData. The router
+    // exposes the same quote as an HTTP View API, without token-pool discovery.
+    const result = await postJson(`${APTOS_MAINNET_API}/view`, {
+      function: `${src.ccip.router}::router::get_fee`, type_arguments: [],
+      arguments: [dst.ccip.selector, message.receiver, "0x", [request.srcTokenAddress], [request.amount], ["0x0"], "0xa", "0x0", message.extraArgs],
+    });
+    fee = Array.isArray(result) ? result[0] : undefined;
+  } else {
+    fee = await postJson(`${TRANSPORTER}/ccipData/getFeeData`, {
+      sourceChainSelectorName: src.ccip.selectorName, destChainSelectorName: dst.ccip.selectorName,
+      routerAddress: src.ccip.router, ccipMessage: message,
+    });
+  }
+  if (typeof fee !== "string" || !/^\d+$/.test(fee)) throw new Error("Invalid CCIP fee response.");
+  return { ccipFee: fee };
 }

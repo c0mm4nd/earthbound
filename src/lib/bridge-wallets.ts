@@ -65,6 +65,7 @@ type AptosWalletProvider = {
   name?: string;
   connect(): Promise<{ address?: string }>;
   account?(): Promise<{ address?: string }>;
+  network?(): Promise<string | { name?: string; chainId?: number | string; chain_id?: number | string }>;
   disconnect?(): Promise<void>;
   signAndSubmitTransaction?(transaction: unknown): Promise<AptosTransactionResult>;
   signAndSubmitBCSTransaction?(transaction: Uint8Array): Promise<AptosTransactionResult>;
@@ -359,6 +360,7 @@ function getStarknetWalletProvider(walletId?: string) {
 export function getExternalWalletOptions(chainType: BridgeChainType): WalletOption[] {
   if (chainType === "SOLANA") return getSolanaWalletOptions();
   if (typeof window === "undefined") return [];
+  if (chainType === "CANTON") return [{ id: "canton-official", label: "Canton wallets", installed: true }];
   if (chainType === "APTOS") return aptosWalletEntries().map(({ id, label }) => ({ id, label, installed: true }));
   if (chainType === "STARKNET") return starknetWalletEntries().map(({ id, label }) => ({ id, label, installed: true }));
   if (chainType === "STELLAR") return [{ id: "freighter", label: "Freighter", installed: Boolean((window as Window & { freighter?: boolean }).freighter) }];
@@ -718,6 +720,7 @@ export async function connectExternalWallet(
   }
 
   switch (chainType) {
+    case "CANTON": return (await import("./canton-wallet")).connectCantonWallet();
     case "SOLANA": {
       const provider = getSolanaWalletProvider(walletId);
 
@@ -827,6 +830,7 @@ export async function disconnectExternalWallet(chainType: BridgeChainType | unde
   }
 
   switch (chainType) {
+    case "CANTON": return (await import("./canton-wallet")).disconnectCantonWallet();
     case "SOLANA":
       await getSolanaWalletProvider(walletId)?.disconnect?.();
       return;
@@ -947,7 +951,7 @@ function assertWalletAccount(actual: string | undefined, expected: string, hex =
   }
 }
 
-export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expectedAccount: string, solanaWalletId?: SolanaWalletId, onSubmitted?: (submission: SolanaSubmission) => void) {
+export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expectedAccount: string, solanaWalletId?: SolanaWalletId, onSubmitted?: (submission: SolanaSubmission) => void, beforeSign?: () => void) {
   assertExternalPlan(userSteps, "SOLANA");
   const provider = getSolanaWalletProvider(solanaWalletId);
 
@@ -956,6 +960,8 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expecte
   }
 
   const connection = getSolanaConnection();
+  if (userSteps.some(step => getEncodedTransactionPayload(step)?.ccip) &&
+      await connection.getGenesisHash() !== "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d") throw new Error("Connect to Solana mainnet for CCIP.");
   let lastSignature: string | undefined;
   let executedSteps = 0;
 
@@ -997,6 +1003,7 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expecte
     const simulation = await connection.simulateTransaction(versionedTransaction, { sigVerify: false, commitment: "confirmed" });
     if (simulation.value.err) throw new Error(`Solana simulation failed: ${JSON.stringify(simulation.value.err)}`);
     assertWalletAccount(provider.publicKey?.toBase58(), expectedAccount);
+    beforeSign?.();
     if (provider.publicKey?.toBase58() !== versionedTransaction.message.staticAccountKeys[0].toBase58())
       throw new Error("Solana wallet changed. Refresh the quote.");
     let submittedValidity: SolanaSubmission["validity"];
@@ -1011,7 +1018,16 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expecte
 
       lastSignature = result.signature;
     } else if (provider.signTransaction) {
+      const originalMessage = getEncodedTransactionPayload(step)?.ccip ? versionedTransaction.message.serialize() : undefined;
       const signedTransaction = await provider.signTransaction(versionedTransaction);
+      if (originalMessage) {
+        const signedMessage = signedTransaction.message.serialize();
+        if (signedMessage.length !== originalMessage.length || signedMessage.some((value, i) => value !== originalMessage[i])) {
+          throw new Error("The wallet changed the reviewed CCIP transaction. Refresh before sending.");
+        }
+        assertWalletAccount(provider.publicKey?.toBase58(), expectedAccount);
+        beforeSign?.();
+      }
 
       if (hasBlockhashContext && signedTransaction.message.recentBlockhash === encoded.blockhash) {
         submittedValidity = { blockhash: encoded.blockhash!, lastValidBlockHeight: encoded.lastValidBlockHeight! };
@@ -1042,7 +1058,7 @@ export function checkSolanaSubmission(submission: SolanaSubmission) {
   return inspectSolanaSubmission(getSolanaConnection(), submission);
 }
 
-export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expectedAccount: string, walletId?: string) {
+export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expectedAccount: string, walletId?: string, lifecycle?: { beforeSign?: () => void; submitted?: (hash: string) => void }) {
   assertExternalPlan(userSteps, "APTOS");
   const provider = getAptosWalletProvider(walletId);
 
@@ -1071,6 +1087,14 @@ export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expected
     }
 
     assertWalletAccount((await provider.account?.())?.address, expectedAccount, true);
+    if (encoded.ccip) {
+      const network = await provider.network?.();
+      const name = typeof network === "string" ? network : network?.name;
+      const id = typeof network === "object" ? network.chainId ?? network.chain_id : undefined;
+      if (id !== undefined ? String(id) !== "1" : name?.toLowerCase() !== "mainnet") throw new Error("Switch the Aptos wallet to mainnet before sending CCIP.");
+      assertWalletAccount((await provider.account?.())?.address, expectedAccount, true);
+    }
+    lifecycle?.beforeSign?.();
     const submissionResult =
       aptosTransactionInput.kind === "payload"
         ? await signAndSubmitAptosPayload(provider, aptosTransactionInput.value)
@@ -1085,6 +1109,8 @@ export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expected
               })();
 
     lastHash = getTransactionHash(submissionResult);
+    if (encoded.ccip && (!lastHash || !/^0x[0-9a-f]{64}$/i.test(lastHash))) throw new Error("The Aptos wallet did not return a valid transaction hash. Check wallet activity before retrying.");
+    if (lastHash) lifecycle?.submitted?.(lastHash);
     executedSteps += 1;
   }
 

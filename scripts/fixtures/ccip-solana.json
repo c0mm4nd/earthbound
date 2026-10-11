@@ -1,0 +1,41 @@
+{
+  "request": {
+    "provider": "ccip",
+    "srcChainKey": "solana",
+    "dstChainKey": "bsc",
+    "srcTokenAddress": "Dz9mQ9NzkBcCsuGPFJ3r1bS4wgqKMHBPiVuniW8Mbonk",
+    "dstTokenAddress": "0xba38b3c706f7a515ff7c8db04daa0a134ec46d2b",
+    "srcWalletAddress": "HN7WRRpSQxZN8QvvNhD9sV9sZrYGw5EJgGkzZ6koiuk1",
+    "dstWalletAddress": "0x1111111111111111111111111111111111111111",
+    "amount": "1"
+  },
+  "ccip": {
+    "router": "Ccip842gzYHhvdDkSyi2YVCoAWPbYJoApMFzSxQroE9C",
+    "sourceSelector": "124615329519749607",
+    "destinationSelector": "11344663589394136015",
+    "sourceChainId": 1,
+    "sourceFamily": "SOLANA",
+    "destinationFamily": "EVM",
+    "sourceToken": "Dz9mQ9NzkBcCsuGPFJ3r1bS4wgqKMHBPiVuniW8Mbonk",
+    "destinationToken": "0xba38b3c706f7a515ff7c8db04daa0a134ec46d2b",
+    "receiver": "0x1111111111111111111111111111111111111111",
+    "nativeFee": "2522273",
+    "maxNativeFee": "2547496",
+    "quotedAt": 1791726903190
+  },
+  "step": {
+    "type": "TRANSACTION",
+    "chainType": "SOLANA",
+    "chainKey": "solana",
+    "description": "Send CCIP transfer",
+    "transaction": {
+      "encoded": {
+        "encoding": "base64",
+        "serializedTransaction": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQAPFvMji6wzS2Z64eipDPICCLCfka8CxaHJhgUKke/pACp2hLSfJIorYy/E2LLjKsRO1n4JGGNjHfSlgEzNPjwL1jhl9Y1WXQOWTfarM4tKiUgu7TpVMbmlYaGJB6dIG+ovudDjLNzUORMS0UTD1nKbr2KC+8oFkHg1grhw4ET7JOOrAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB9m8ERp56SVroEcGhNIfvL/CSI5gKpopnBxXnKVd1aX2K6wd6Zl3OYeM2r/ymWL0X5Mdv19psjG7gfF7zZePINAwZGb+UhFzL/7K26csOb57yM5bvF9xJrLEObOkAAAAAG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqRFab9KypQABzpXig687cilSxwxBF4Oaf+pjMFEAn5/9rJcpd+G6tf/2xoYpH5lP9S80q+0bx9+I929D+SZZLI8l4Ivl2q+A3LgTO9Sc0q0kwF4cezVh0kEPH97BLnma6AabiFf+q4GE+2h/Y0YYwDXaxDncGus7VZig8AAAAAAB2ahmGC1pAuZJLHoygSvqNn4alNcGsW7akUSdBIa4DQEEhcsJ+8LY1hB8gsstcUkW2fZBOGSI2XPhF3Zd1ocx4IqK93yRDpTejaV5wPb9WSykD4trAaDJE2hi2URuHxDUYqjKSYTpXupfCTm00RmIUk4aGxwwQkszWxFgCv1BmRV0bxH7aNOyf60+DAfFl6DtO3yJoTzHb2mUDwUaTWFk6QZYk+2Vq4boMFsomKdhvhwhzb+wt/Xm79U+g7KDKxpQr6IGLXM6hNAubz/dpIYLbC9xklLVvUuV1k7wPNbZT8rnr1WTrmkUXsdWNflqQ2wtBB/P34BqWgDOo2vPOgZzUON4deNIBcvwRfFu2vYHK0rGJY/o6+C0zOn/Z0tofdx12j8q70WfFt9GN7obHOmtpiJIbCJqCW2sVDUNJITEf28DBwAFAsBcFQAIAwEJAAkEAQAAAAAAAAAKHwsCAwAECAwEBQkNDg8QERITFAEVBhkaGxYXHAgYHR6iAWzYhr/56iFUzzsljm1XcJ0gAAAAAAAAAAAAAAAAAAAAEREREREREREREREREREREREREREAAAAAAQAAAMDwQqqsn4I3RswQ4QTTY1WRzy16NHGubwcnwI/bJ02FAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABUAAAAYHc8QAAAAAAAAAAAAAAAAAAAAAAEBAAAAAAFi35F/LQ5+kcglvPPSUWYcQVgbRHdLOpmyfV+gcH+HEwMDBAcGAAECBQgJ",
+        "blockhash": "Fgwk9g8enZN8G14JSnx3CyGPX7C6tdYifm5pLFDtTnLE",
+        "lastValidBlockHeight": 433712385,
+        "ccip": true
+      }
+    }
+  }
+}

@@ -1,4 +1,5 @@
-import { formatUnits, isAddress } from "viem";
+import { ccipAddressKey, isCcipAddress } from "./ccip-addresses";
+import { formatUnits } from "viem";
 import type { BridgeChain, BridgeQuoteResponse, BridgeToken, QuoteFee } from "./bridge-types";
 
 export interface CcipChain extends BridgeChain {
@@ -18,11 +19,12 @@ export interface CcipQuoteRequest {
   dstTokenAddress: string;
   dstWalletAddress: string;
   amount: string;
+  srcWalletAddress?: string;
 }
 
 export function ccipTransferKey(request: CcipQuoteRequest, sender: string) {
-  return JSON.stringify([request.srcChainKey, request.dstChainKey, request.srcTokenAddress.toLowerCase(), request.dstTokenAddress.toLowerCase(),
-    BigInt(request.amount).toString(), request.dstWalletAddress.toLowerCase(), sender.toLowerCase()]);
+  return JSON.stringify([request.srcChainKey, request.dstChainKey, ccipAddressKey(request.srcTokenAddress), ccipAddressKey(request.dstTokenAddress),
+    BigInt(request.amount).toString(), ccipAddressKey(request.dstWalletAddress), ccipAddressKey(sender)]);
 }
 
 // Hex addresses are case insensitive; Solana addresses must retain their case.
@@ -71,15 +73,16 @@ export function resolveCcipQuote(catalog: CcipCatalog, request: CcipQuoteRequest
   if (!srcChain || !dstChain || !srcToken || !dstToken || srcChain.chainKey === dstChain.chainKey || !supportsCcipPair(srcToken, dstToken)) {
     throw new Error("CCIP does not support this token pair and direction.");
   }
-  // Transporter's total-fees endpoint currently supports EVM token transfers.
-  if (srcChain.chainType !== "EVM" || dstChain.chainType !== "EVM") {
-    throw new Error("CCIP quotes currently support EVM-to-EVM routes. Other networks remain available through their existing routes.");
+  if (!["EVM", "SOLANA", "APTOS", "CANTON"].includes(srcChain.chainType) ||
+      !["EVM", "SOLANA", "APTOS", "CANTON"].includes(dstChain.chainType)) {
+    throw new Error("This chain family has no supported CCIP mainnet route.");
   }
-  if (!isAddress(request.dstWalletAddress) || /^0x0{40}$/i.test(request.dstWalletAddress)) {
+  if (!isCcipAddress(dstChain.chainType, request.dstWalletAddress)) {
     throw new Error("Enter a valid CCIP destination address.");
   }
   const amount = unsignedAmount(request.amount, "CCIP amount");
   if (amount === BigInt(0)) throw new Error("CCIP amount must be greater than zero.");
+  if (["SOLANA", "APTOS"].includes(srcChain.chainType) && amount >= BigInt(2) ** BigInt(64)) throw new Error("CCIP amount exceeds the source chain limit.");
   return { srcChain, dstChain, srcToken, dstToken, amount };
 }
 
@@ -110,7 +113,7 @@ export function normalizeCcipQuote(
   // Review a 1% fee ceiling, but send only the current router fee.
   const maxNativeFee = (nativeFee * BigInt(101) + BigInt(99)) / BigInt(100);
   const validSelector = (value?: string) => value && /^\d{1,20}$/.test(value) && BigInt(value) > BigInt(0) && BigInt(value) < BigInt(2) ** BigInt(64);
-  if (!validSelector(srcChain.ccip.selector) || !validSelector(dstChain.ccip.selector) || !isAddress(srcChain.ccip.router)) {
+  if (!validSelector(srcChain.ccip.selector) || !validSelector(dstChain.ccip.selector) || !(srcChain.chainType === "CANTON" ? srcChain.ccip.router.includes("@") : isCcipAddress(srcChain.chainType, srcChain.ccip.router))) {
     throw new Error("CCIP execution configuration is unavailable for this route. Try again shortly.");
   }
   const transferFee = "tokenTransferFee" in data ? data.tokenTransferFee : undefined;
@@ -123,7 +126,9 @@ export function normalizeCcipQuote(
   const fees: QuoteFee[] = [{
     type: "CCIP", amount: maxNativeFee.toString(), chainKey: srcChain.chainKey,
     tokenAddress: native.address, decimals: native.decimals, symbol: native.symbol,
-    name: "Maximum CCIP fee", description: "Includes a 1% fee ceiling. Only the current fee is sent; source network gas is additional.",
+    name: srcChain.chainType === "EVM" ? "Maximum CCIP fee" : "Estimated CCIP fee",
+    description: srcChain.chainType === "EVM" ? "Includes a 1% fee ceiling. Only the current fee is sent; source network gas is additional."
+      : "Includes a 1% estimate buffer. The source router charges its fee at execution; network gas is additional.",
   }];
   if (deducted > BigInt(0)) fees.push({
     type: "TOKEN_TRANSFER", amount: deducted.toString(), chainKey: srcChain.chainKey,
@@ -135,7 +140,7 @@ export function normalizeCcipQuote(
     provider: "ccip",
     ccip: {
       router: srcChain.ccip.router, sourceSelector: srcChain.ccip.selector!, destinationSelector: dstChain.ccip.selector!,
-      sourceChainId: srcChain.chainId, sourceToken: srcToken.address, destinationToken: dstToken.address,
+      sourceChainId: srcChain.chainId, sourceFamily: srcChain.chainType, destinationFamily: dstChain.chainType, sourceToken: srcToken.address, destinationToken: dstToken.address,
       receiver: request.dstWalletAddress, nativeFee: nativeFee.toString(), maxNativeFee: maxNativeFee.toString(), quotedAt: Date.now(),
     },
     srcAmount: amount.toString(), dstAmount: dstAmount.toString(),

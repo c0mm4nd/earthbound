@@ -67,7 +67,8 @@ import {
 import { assertExecutionPlan, assertSuccessfulEvmReceipt } from "@/lib/execution-safety";
 import { buildCustomOftQuote } from "@/lib/custom-oft-quote";
 import { bridgeTokenKey, ccipTransferKey, supportsCcipPair } from "@/lib/ccip";
-import { executeCcipTransfer } from "@/lib/ccip-execution";
+import { ccipAptosStep, inspectAptosSubmission } from "@/lib/ccip-aptos";
+import { assertCcipQuote, executeCcipTransfer } from "@/lib/ccip-execution";
 import { buildDirectOftQuote, supportsDirectOftRoute } from "@/lib/direct-oft";
 import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
 import { checkSolanaSubmission, fetchExternalWalletBalance } from "@/lib/bridge-wallets";
@@ -3611,12 +3612,24 @@ export function BridgeApp() {
     setCheckingHistoryId(item.id);
     try {
       if (!item.ccipSubmission.confirmed) {
-        const client = getPublicClient(wagmiConfig, { chainId: item.ccipSubmission.chainId });
-        if (!client) throw new Error("The source network RPC is unavailable. Check RPC settings and retry status.");
-        const receipt = await client.getTransactionReceipt({ hash: item.ccipSubmission.hash as Hex });
-        if (receipt.status !== "success") {
-          applyCcipStatus(item.id, { status: "FAILED", error: "The source transaction reverted. No CCIP transfer was sent." });
-          return;
+        const family = item.ccipSubmission.family ?? "EVM";
+        if (family === "SOLANA" || family === "APTOS") {
+          const outcome = family === "SOLANA"
+            ? (await checkSolanaSubmission(item.solanaSubmission ?? { signature: item.ccipSubmission.hash })).outcome
+            : await inspectAptosSubmission(item.ccipSubmission.hash);
+          if (outcome === "pending") throw new Error("Source confirmation pending.");
+          if (outcome === "failed" || outcome === "expired") {
+            applyCcipStatus(item.id, { status: "FAILED", error: "Source transaction failed or expired. No CCIP transfer was sent." });
+            return;
+          }
+        } else {
+          const client = getPublicClient(wagmiConfig, { chainId: item.ccipSubmission.chainId });
+          if (!client) throw new Error("The source network RPC is unavailable. Check RPC settings and retry status.");
+          const receipt = await client.getTransactionReceipt({ hash: item.ccipSubmission.hash as Hex });
+          if (receipt.status !== "success") {
+            applyCcipStatus(item.id, { status: "FAILED", error: "The source transaction reverted. No CCIP transfer was sent." });
+            return;
+          }
         }
         updateExecutionHistoryItem(item.id, { ccipSubmission: { ...item.ccipSubmission, confirmed: true } });
       }
@@ -4506,47 +4519,82 @@ export function BridgeApp() {
     try {
       let lastTxHash: string | undefined;
       if (quote.provider === "ccip") {
-        if (!address || sourceChainType !== "EVM") throw new Error("Connect an EVM source wallet for CCIP.");
-        if (chainId !== srcChain.chainId) await switchEvmChain(srcChain);
+        if (!sourceWalletAddress) throw new Error("Connect the source wallet for CCIP.");
+        if (sourceChainType === "EVM" && chainId !== srcChain.chainId) await switchEvmChain(srcChain);
         const submitted = (hash: string, confirmed: boolean) => {
           const transferStatus = confirmed ? "PENDING" : "CONFIRMATION_PENDING";
-          updateExecutionHistoryItem(historyId, { txHash: hash, ccipSubmission: { chainId: srcChain.chainId, hash, confirmed }, transferStatus,
+          updateExecutionHistoryItem(historyId, { txHash: hash, ccipSubmission: { chainId: srcChain.chainId, family: sourceChainType, hash, confirmed }, transferStatus,
             currentStep: confirmed ? "Source confirmed. Waiting for CCIP delivery." : "CCIP transaction submitted. Waiting for source confirmation." });
           setExecutionState(current => ({ ...current, txHash: hash, transferStatus }));
         };
-        lastTxHash = await executeCcipTransfer(quote, quoteRequestState.payload, srcChain, address, {
-          assertContext: () => {
-            assertCurrentExecutionContext();
-            const current = getAccount(wagmiConfig);
-            if (current.address?.toLowerCase() !== address.toLowerCase() || current.chainId !== srcChain.chainId) throw new Error("Wallet account or network changed. Review the transfer again.");
-          },
-          refresh: async () => {
-            const result = await fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
-              method: "POST", body: JSON.stringify({ ...quoteRequestState.payload, provider: "ccip" }),
-            });
-            if (!result.quotes[0]) throw new Error("CCIP returned no available route.");
-            return result.quotes[0];
-          },
-          read: args => readEvmContractForChain<bigint>({ ...args, chain: srcChain }),
-          send: tx => sendEvmTransactionForChain(srcChain, { ...tx, from: address }),
-          wait: async (hash, kind) => {
-            const receipt = await waitForTransactionReceipt(wagmiConfig, {
-              chainId: srcChain.chainId, hash: hash as Hex,
-              onReplaced: ({ reason, transactionReceipt }) => {
-                if (kind === "bridge" && reason === "repriced") submitted(transactionReceipt.transactionHash, false);
-                if (reason !== "repriced") {
-                  if (kind === "bridge" && reason === "cancelled") applyCcipStatus(historyId, { status: "CANCELLED", error: "Source transaction was cancelled in the wallet." });
-                  throw new Error("Transaction was cancelled or replaced. Check wallet activity before retrying.");
-                }
-              },
-            });
-            if (kind === "bridge" && receipt.status !== "success") applyCcipStatus(historyId, { status: "FAILED", error: "Source transaction reverted. No CCIP transfer was sent." });
-            assertSuccessfulEvmReceipt(receipt);
-            return receipt.transactionHash;
-          },
-          submitted,
-          step: currentStep => updateExecutionHistoryItem(historyId, { currentStep }),
-        });
+        if (sourceChainType === "EVM") {
+          if (!address) throw new Error("Connect the EVM source wallet.");
+          lastTxHash = await executeCcipTransfer(quote, quoteRequestState.payload, srcChain, address, {
+            assertContext: () => {
+              assertCurrentExecutionContext();
+              const current = getAccount(wagmiConfig);
+              if (current.address?.toLowerCase() !== address.toLowerCase() || current.chainId !== srcChain.chainId) throw new Error("Wallet account or network changed. Review the transfer again.");
+            },
+            refresh: async () => {
+              const result = await fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
+                method: "POST", body: JSON.stringify({ ...quoteRequestState.payload, provider: "ccip" }),
+              });
+              if (!result.quotes[0]) throw new Error("CCIP returned no available route.");
+              return result.quotes[0];
+            },
+            read: args => readEvmContractForChain<bigint>({ ...args, chain: srcChain }),
+            send: tx => sendEvmTransactionForChain(srcChain, { ...tx, from: address }),
+            wait: async (hash, kind) => {
+              const receipt = await waitForTransactionReceipt(wagmiConfig, {
+                chainId: srcChain.chainId, hash: hash as Hex,
+                onReplaced: ({ reason, transactionReceipt }) => {
+                  if (kind === "bridge" && reason === "repriced") submitted(transactionReceipt.transactionHash, false);
+                  if (reason !== "repriced") {
+                    if (kind === "bridge" && reason === "cancelled") applyCcipStatus(historyId, { status: "CANCELLED", error: "Source transaction was cancelled in the wallet." });
+                    throw new Error("Transaction was cancelled or replaced. Check wallet activity before retrying.");
+                  }
+                },
+              });
+              if (kind === "bridge" && receipt.status !== "success") applyCcipStatus(historyId, { status: "FAILED", error: "Source transaction reverted. No CCIP transfer was sent." });
+              assertSuccessfulEvmReceipt(receipt);
+              return receipt.transactionHash;
+            },
+            submitted,
+            step: currentStep => updateExecutionHistoryItem(historyId, { currentStep }),
+          });
+        } else if (sourceChainType === "SOLANA" || sourceChainType === "APTOS") {
+          assertCcipQuote(quote, quoteRequestState.payload, srcChain);
+          const built = await fetchJson<{ quote: BridgeQuote; userSteps: QuoteUserStep[] }>("/api/bridge/ccip/build", {
+            method: "POST", body: JSON.stringify({ ...quoteRequestState.payload, srcWalletAddress: sourceWalletAddress,
+              maxNativeFee: quote.ccip!.maxNativeFee, minDstAmount: quote.dstAmount }),
+          });
+          assertCurrentExecutionContext();
+          assertCcipQuote(built.quote, quoteRequestState.payload, srcChain);
+          if (BigInt(built.quote.ccip!.nativeFee) > BigInt(quote.ccip!.maxNativeFee) || BigInt(built.quote.dstAmount) < BigInt(quote.dstAmount) ||
+              built.quote.ccip!.router !== quote.ccip!.router || built.quote.ccip!.sourceSelector !== quote.ccip!.sourceSelector ||
+              built.quote.ccip!.destinationSelector !== quote.ccip!.destinationSelector) throw new Error("CCIP quote changed. Refresh before sending.");
+          // Aptos entry-function arguments are rebuilt from the reviewed transfer in the browser.
+          const steps = sourceChainType === "APTOS" ? [ccipAptosStep(built.quote, srcChain.chainKey)] : built.userSteps;
+          if (steps.length !== 1) throw new Error("CCIP requires one atomic source transaction.");
+          assertExecutionPlan(steps, srcChain, sourceWalletAddress);
+          lastTxHash = await bridgeWallets.executeUserSteps(sourceChainType, steps, sourceWalletAddress, submission => {
+            submitted(submission.signature, false);
+            updateExecutionHistoryItem(historyId, { solanaSubmission: submission });
+          }, { beforeSign: assertCurrentExecutionContext, submitted: hash => submitted(hash, false) });
+          if (!lastTxHash) throw new Error("The source wallet returned no transaction hash.");
+          if (sourceChainType === "APTOS") {
+            const outcome = await inspectAptosSubmission(lastTxHash);
+            if (outcome === "failed") {
+              applyCcipStatus(historyId, { status: "FAILED", error: "Aptos source transaction failed. No CCIP transfer was sent." });
+              throw new Error("Aptos source transaction failed.");
+            }
+            if (outcome === "pending") {
+              applyCcipStatus(historyId, { status: "CONFIRMATION_PENDING", substatus: "Waiting for Aptos source confirmation. Use Check status to continue." });
+              return;
+            }
+          }
+          submitted(lastTxHash, true);
+        } else throw new Error("Configure the source wallet's CCIP connection before sending.");
         pushExecutionNotification({ tone: "neutral", title: "CCIP transfer submitted", message: "Source confirmed. Tracking destination delivery." });
         applyCcipStatus(historyId, { status: "PENDING", substatus: "Source confirmed. Waiting for CCIP delivery." });
         void pollTransferStatus(quote.id, "ccip", undefined, lastTxHash, status => applyCcipStatus(historyId, status)).then(status => {
@@ -4870,6 +4918,10 @@ export function BridgeApp() {
       const errorMessage = getErrorMessage(error);
       const ccipRecord = executionHistoryRef.current.find(item => item.id === historyId);
       if (ccipRecord?.ccipSubmission) {
+        if (error instanceof SolanaConfirmationError && error.outcome !== "pending") {
+          applyCcipStatus(historyId, { status: "FAILED", error: errorMessage });
+          return;
+        }
         const phase = ccipRecord.phase === "error" ? "error" : "pending";
         const message = phase === "pending" ? "CCIP transaction was submitted. Use Check status before sending again." : errorMessage;
         updateExecutionHistoryItem(historyId, { phase, error: message, currentStep: undefined });
@@ -5229,7 +5281,7 @@ export function BridgeApp() {
       : null;
   const canExecuteQuote =
     Boolean(quote) &&
-    (!quote?.ccip || sourceChainHasConfiguredWallet) &&
+    (!quote?.ccip || !sourceChainUsesEvmWallet || sourceChainHasConfiguredWallet) &&
     !unresolvedSubmittedTransfer &&
     !isQuoting &&
     !quoteError &&
@@ -5268,7 +5320,7 @@ export function BridgeApp() {
         ? "Using default API routes. Add an API key to enable Direct API."
         : null;
   const executionCapabilityCopy =
-    quote?.ccip && !sourceChainHasConfiguredWallet
+    quote?.ccip && sourceChainUsesEvmWallet && !sourceChainHasConfiguredWallet
       ? "CCIP sending requires a configured RPC for the source network."
       : activeSrcChain && !canExecuteSelectedSourceChain
       ? `${getChainTypeDisplayLabel(activeSrcChain.chainType)} source execution is not available in this build yet.`
@@ -5510,7 +5562,7 @@ export function BridgeApp() {
                 ) : null}
 
                 {!isCustomOftSource && quote?.provider === "ccip" ? (
-                  <p className="mt-3 text-xs text-[var(--muted)]">Send with CCIP from your wallet. The displayed fee includes a 1% ceiling; only the current fee is sent. Source network gas is additional.</p>
+                  <p className="mt-3 text-xs text-[var(--muted)]">{sourceChainUsesEvmWallet ? "Send with CCIP from your wallet. The displayed fee includes a 1% ceiling; only the current fee is sent. Source network gas is additional." : "Send with CCIP from your wallet. The fee estimate includes a 1% buffer; the router charges the fee at execution. Source network gas is additional."}</p>
                 ) : null}
                 {[...new Set([...(chainsQuery.data?.warnings ?? []), ...(tokensQuery.data?.warnings ?? []), ...(routeTokensQuery.data?.warnings ?? []), ...quoteWarnings])].map(warning => (
                   <p key={warning} role="status" className="mt-2 text-xs text-amber-200/80">{warning}</p>

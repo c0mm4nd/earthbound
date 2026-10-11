@@ -34,7 +34,7 @@ export function mergeTransporterCatalog(directory: CcipCatalog, config: Record<s
   for (const [key, network] of Object.entries(TRANSPORTER_NETWORKS)) {
     let chain = chains.get(network.selectorName);
     if (!chain) {
-      const existing = baseChains.find(base => base.chainType === network.chainType && base.chainId === network.chainId);
+      const existing = baseChains.find(base => base.chainType === network.chainType && (network.chainType !== "EVM" || base.chainId === network.chainId));
       const chainKey = existing?.chainKey ?? `ccip-${network.selectorName}`;
       chain = {
         ...(existing ?? {

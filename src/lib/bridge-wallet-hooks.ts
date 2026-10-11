@@ -35,6 +35,7 @@ import {
 } from "@/lib/bridge-wallets";
 
 import type { SolanaSubmission } from "./solana-confirmation";
+import { watchCantonWallet } from "./canton-wallet";
 import { watchStellarWallet } from "./stellar-wallet";
 import { walletIdentifier, type WalletOption } from "@/lib/wallet-options";
 
@@ -165,6 +166,17 @@ export function useBridgeWallets() {
     });
   }, [solanaWalletId]);
 
+  const cantonWalletId = manualWalletSessions.CANTON?.walletId;
+  useEffect(() => {
+    if (!cantonWalletId) return;
+    return watchCantonWallet(address => setManualWalletSessions(current => {
+      const session = current.CANTON;
+      if (!session || session.walletId !== cantonWalletId || session.address === address) return current;
+      if (address) return { ...current, CANTON: { ...session, address } };
+      const next = { ...current }; delete next.CANTON; return next;
+    }));
+  }, [cantonWalletId]);
+
   const stellarWalletId = manualWalletSessions.STELLAR?.walletId;
   useEffect(() => {
     if (stellarWalletId !== "freighter") return;
@@ -182,6 +194,7 @@ export function useBridgeWallets() {
     switch (chainType) {
       case "SOLANA":
       case "APTOS":
+      case "CANTON":
       case "TRON":
       case "STARKNET":
       case "STELLAR": {
@@ -241,6 +254,7 @@ export function useBridgeWallets() {
     switch (chainType) {
       case "SOLANA":
       case "APTOS":
+      case "CANTON":
       case "TRON":
       case "STARKNET":
       case "STELLAR": {
@@ -275,6 +289,7 @@ export function useBridgeWallets() {
     userSteps: QuoteUserStep[],
     expectedAccount: string,
     onSubmitted?: (submission: SolanaSubmission) => void,
+    lifecycle?: { beforeSign?: () => void; submitted?: (hash: string) => void },
   ) {
     if (!expectedAccount) throw new Error("Connect the source wallet and refresh the quote.");
     if (["APTOS", "TRON", "STARKNET"].includes(chainType ?? "")) {
@@ -289,10 +304,10 @@ export function useBridgeWallets() {
         if (!session?.solanaWalletId || session.address !== expectedAccount) {
           throw new Error("Solana wallet changed. Reconnect and refresh the quote.");
         }
-        return executeSolanaUserSteps(userSteps, expectedAccount, session.solanaWalletId, onSubmitted);
+        return executeSolanaUserSteps(userSteps, expectedAccount, session.solanaWalletId, onSubmitted, lifecycle?.beforeSign);
       }
       case "APTOS":
-        return executeAptosUserSteps(userSteps, expectedAccount, manualWalletSessions.APTOS?.walletId);
+        return executeAptosUserSteps(userSteps, expectedAccount, manualWalletSessions.APTOS?.walletId, lifecycle);
       case "TRON":
         return executeTronUserSteps(userSteps, expectedAccount);
       case "STARKNET":

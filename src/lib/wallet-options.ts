@@ -4,6 +4,7 @@ export const WALLET_NETWORKS = [
   { type: "SUI", label: "Sui" },
   { type: "IOTAMOVE", label: "IOTA" },
   { type: "APTOS", label: "Aptos" },
+  { type: "CANTON", label: "Canton" },
   { type: "TRON", label: "Tron" },
   { type: "STARKNET", label: "Starknet" },
   { type: "TON", label: "TON" },

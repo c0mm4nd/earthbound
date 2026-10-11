@@ -1,5 +1,7 @@
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, isAddress, parseAbi, zeroAddress, type Abi, type Address, type Hex } from "viem";
 import type { BridgeChain, BridgeQuote } from "./bridge-types";
+import { ccipAddressKey, isCcipAddress } from "./ccip-addresses";
+import { ccipMessageEncoding } from "./ccip-message";
 import type { CcipQuoteRequest } from "./ccip";
 
 // IRouterClient's EVM2AnyMessage. Pure token transfer, no receiver callback.
@@ -16,16 +18,17 @@ function uint(value: string, bits = 256) {
   if (!/^\d{1,78}$/.test(value) || BigInt(value) >= BigInt(2) ** BigInt(bits)) throw new Error("Invalid CCIP transaction amount or selector.");
   return BigInt(value);
 }
-const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+const same = (a: string, b: string) => ccipAddressKey(a) === ccipAddressKey(b);
 
 export function assertCcipQuote(quote: BridgeQuote, request: CcipQuoteRequest, chain: BridgeChain) {
   const c = quote.ccip;
-  if (quote.provider !== "ccip" || !c || chain.chainType !== "EVM" || c.sourceChainId !== chain.chainId ||
+  if (quote.provider !== "ccip" || !c || (c.sourceFamily ?? "EVM") !== chain.chainType || c.sourceChainId !== chain.chainId ||
       request.srcChainKey !== chain.chainKey || quote.srcAmount !== request.amount ||
       !same(c.sourceToken, request.srcTokenAddress) || !same(c.destinationToken, request.dstTokenAddress) || !same(c.receiver, request.dstWalletAddress) ||
       quote.routeSteps.length !== 1 || quote.routeSteps[0].type !== "CCIP" ||
       quote.routeSteps[0].srcChainKey !== request.srcChainKey || quote.routeSteps[0].dstChainKey !== request.dstChainKey ||
-      ![c.router, c.sourceToken, c.destinationToken, c.receiver].every(a => isAddress(a) && !same(a, zeroAddress)) ||
+      !isCcipAddress(chain.chainType, c.router) || !isCcipAddress(chain.chainType, c.sourceToken) ||
+      !isCcipAddress(c.destinationFamily ?? "EVM", c.receiver) || !isCcipAddress(c.destinationFamily ?? "EVM", c.destinationToken) ||
       uint(c.sourceSelector, 64) === BigInt(0) || uint(c.destinationSelector, 64) === BigInt(0) || c.sourceSelector === c.destinationSelector ||
       uint(quote.srcAmount) === BigInt(0) || uint(quote.dstAmount) === BigInt(0) || uint(c.maxNativeFee) < uint(c.nativeFee) ||
       uint(c.maxNativeFee) > (uint(c.nativeFee) * BigInt(101) + BigInt(99)) / BigInt(100) || !Number.isFinite(c.quotedAt)) {
@@ -36,11 +39,10 @@ export function assertCcipQuote(quote: BridgeQuote, request: CcipQuoteRequest, c
 export function ccipMessage(quote: BridgeQuote) {
   if (!quote.ccip) throw new Error("Missing CCIP execution data.");
   return {
-    receiver: encodeAbiParameters([{ type: "address" }], [quote.ccip.receiver as Address]),
+    ...ccipMessageEncoding(quote.ccip.sourceFamily ?? "EVM", quote.ccip.destinationFamily ?? "EVM", quote.ccip.receiver),
     data: "0x" as Hex,
     tokenAmounts: [{ token: quote.ccip.sourceToken as Address, amount: BigInt(quote.srcAmount) }],
     feeToken: zeroAddress,
-    extraArgs: CCIP_EXTRA_ARGS,
   };
 }
 
@@ -66,6 +68,7 @@ type Dependencies = {
 // No upstream calldata is signed. Build only exact ERC20 approvals and ccipSend locally.
 export async function executeCcipTransfer(quote: BridgeQuote, request: CcipQuoteRequest, chain: BridgeChain, sender: string, deps: Dependencies) {
   assertCcipQuote(quote, request, chain);
+  if (chain.chainType !== "EVM") throw new Error("Use the source family CCIP executor.");
   if (!isAddress(sender) || same(sender, zeroAddress)) throw new Error("Connect a valid source wallet.");
   const reviewed = quote.ccip!;
   const refresh = async () => {

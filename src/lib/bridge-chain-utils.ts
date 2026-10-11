@@ -1,3 +1,4 @@
+import { isCcipAddress } from "./ccip-addresses";
 import { stellarAddressBytes32 } from "./stellar-address";
 import { tonAccount } from "./direct-oft-address";
 import { PublicKey } from "@solana/web3.js";
@@ -54,6 +55,7 @@ export function getChainTypeDisplayLabel(chainType?: BridgeChainType | null) {
       return "EVM";
     case "SOLANA":
       return "Solana";
+    case "CANTON": return "Canton";
     case "APTOS":
       return "Aptos";
     case "TRON":
@@ -77,6 +79,7 @@ export function getWalletConnectLabel(chainType?: BridgeChainType | null) {
   switch (chainType) {
     case "SOLANA":
       return "Connect Solana Wallet";
+    case "CANTON": return "Connect Canton Wallet";
     case "APTOS":
       return "Connect Aptos Wallet";
     case "TRON":
@@ -100,6 +103,7 @@ export function getDestinationAddressPlaceholder(chainType?: BridgeChainType | n
   switch (chainType) {
     case "SOLANA":
       return "Solana wallet address";
+    case "CANTON": return "party::1220...";
     case "APTOS":
       return "0x...";
     case "TRON":
@@ -122,6 +126,7 @@ export function getAddressValidationCopy(chainType?: BridgeChainType | null) {
   switch (chainType) {
     case "SOLANA":
       return "Enter a valid Solana address.";
+    case "CANTON": return "Enter a valid Canton party ID.";
     case "APTOS":
       return "Enter a valid Aptos account address.";
     case "TRON":
@@ -152,6 +157,7 @@ export function validateAddressForChainType(
   }
 
   switch (chainType) {
+    case "CANTON": return isCcipAddress("CANTON", normalizedAddress);
     case "STELLAR":
       try { stellarAddressBytes32(normalizedAddress); return true; } catch { return false; }
     case "SOLANA":

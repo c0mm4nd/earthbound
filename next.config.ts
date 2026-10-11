@@ -6,6 +6,7 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  serverExternalPackages: ["@chainlink/ccip-sdk"],
   turbopack: {
     root: rootDir,
   },

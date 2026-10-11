@@ -120,6 +120,8 @@ export interface BridgeQuote {
     sourceSelector: string;
     destinationSelector: string;
     sourceChainId: number;
+    sourceFamily?: string;
+    destinationFamily?: string;
     sourceToken: string;
     destinationToken: string;
     receiver: string;

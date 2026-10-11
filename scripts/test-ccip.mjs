@@ -115,7 +115,7 @@ assert.equal(quote.duration.estimated, "954000");
 for (const amount of ["0", "-1", "1.2", "1e18", "9".repeat(79)]) assert.throws(() => ccipFeeQuery(catalog, { ...request, amount }));
 assert.throws(() => ccipFeeQuery(catalog, { ...request, dstWalletAddress: address(0) }), /destination address/);
 assert.throws(() => ccipFeeQuery(catalog, { ...request, dstTokenAddress: address(4) }), /pair/);
-assert.throws(() => ccipFeeQuery(catalog, { ...request, dstChainKey: "solana", dstTokenAddress: "AbCd" }), /EVM-to-EVM/);
+assert.throws(() => ccipFeeQuery(catalog, { ...request, dstChainKey: "solana", dstTokenAddress: "AbCd" }), /destination address/);
 for (const data of [{}, { ccipFee: "-1" }, { ccipFee: 1 }, { ccipFee: "1", tokenTransferFee: { feeDeducted: request.amount } }, { ccipFee: "1", tokenTransferFee: "bad" }]) assert.throws(() => normalizeCcipQuote(catalog, request, data));
 assert.throws(() => normalizeCcipQuote(catalog, { ...request, amount: "1" }, { ccipFee: "1" }), /too small/);
 

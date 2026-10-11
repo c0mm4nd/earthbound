@@ -10,7 +10,7 @@ function load(name) {
   const source = readFileSync(new URL(`../src/lib/${name}.ts`, import.meta.url), "utf8");
   const cjs = { exports: {} };
   new Script(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText).runInNewContext({
-    module: cjs, exports: cjs.exports, require, URLSearchParams, AbortSignal,
+    module: cjs, exports: cjs.exports, require: id => id.startsWith("./") ? load(id.slice(2)) : require(id), URLSearchParams, AbortSignal,
   });
   return cjs.exports;
 }
