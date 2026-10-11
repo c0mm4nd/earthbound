@@ -19,6 +19,7 @@ export async function GET(request: NextRequest) {
       : [];
     const tokens = mergeBridgeTokens(baseOk && base.status === "fulfilled" ? base.value.data.tokens : [], ccipTokens);
     const warnings = [...(!baseOk ? ["Some token routes are temporarily unavailable."] : []), ...(ccip.status === "rejected" ? ["CCIP token routes are temporarily unavailable."] : [])];
+    if (ccip.status === "fulfilled") warnings.push(...(ccip.value.warnings ?? []));
     return NextResponse.json({ tokens, warnings });
   } catch (error) {
     return NextResponse.json(

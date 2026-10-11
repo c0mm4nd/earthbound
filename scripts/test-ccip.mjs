@@ -9,6 +9,8 @@ const modules = new Map();
 const requests = [];
 let failFees = false;
 let failLatency = false;
+let failDirectory = false;
+let failBaseCatalog = false;
 const address = n => `0x${n.toString(16).padStart(40, "0")}`;
 const native = { chainKey: "ethereum", address: address(0), decimals: 18, symbol: "ETH", name: "Ether" };
 const baseChains = [
@@ -34,12 +36,21 @@ const tokens = { data: {
     8453: { tokenAddress: address(4), decimals: 18, symbol: "TEST", name: "Different token", destinations: ["1"] },
   },
 } };
+const transporterConfig = {
+  "transporter-only": { metadata: { symbol: "$$TEST", name: "Transporter test", imageUrl: "https://example.test/token.svg" }, networks: {
+    mainnet: { token: { address: address(6), decimals: 18 }, destinationNetworks: ["base"] },
+    base: { token: { address: address(7), decimals: 6 }, destinationNetworks: [] },
+  } },
+};
+const flight = `24:${JSON.stringify(["$", "$L1", null, { initialConfig: transporterConfig }])}\n`;
+const transporterHtml = `<script>self.__next_f.push(${JSON.stringify([1, flight.slice(0, 75)])})</script><script>self.__next_f.push(${JSON.stringify([1, flight.slice(75)])})</script>`;
 
 async function mockFetch(url) {
   requests.push(String(url));
-  if (url.includes("transfer.layerzero-api.com")) return Response.json({ chains: baseChains });
-  if (url.includes("/chains?")) return Response.json(chains);
-  if (url.includes("/tokens?")) return Response.json(tokens);
+  if (url === "https://app.transporter.io/") return new Response(transporterHtml);
+  if (url.includes("transfer.layerzero-api.com")) return failBaseCatalog ? new Response("offline", { status: 503 }) : Response.json({ chains: baseChains });
+  if (url.includes("/chains?")) return failDirectory ? new Response("offline", { status: 503 }) : Response.json(chains);
+  if (url.includes("/tokens?")) return failDirectory ? new Response("offline", { status: 503 }) : Response.json(tokens);
   if (url.includes("getTotalFeesEstimate")) return failFees ? new Response("Unavailable", { status: 503 }) : Response.json({ ccipFee: "123456789", tokenTransferFee: { feeDeducted: "1000000000000000" } });
   if (url.includes("getLaneLatency")) return failLatency ? new Response("Unavailable", { status: 500 }) : Response.json({ totalMs: 954000 });
   throw new Error(`Unexpected request ${url}`);
@@ -61,7 +72,16 @@ function load(name) {
 
 const { normalizeCcipCatalog, getCcipCatalog, getCcipQuote } = load("ccip-api");
 const { bridgeTokenKey, mergeBridgeTokens, ccipDestinationTokens, ccipFeeQuery, normalizeCcipQuote, supportsCcipPair } = load("ccip");
+const { parseTransporterConfig, mergeTransporterCatalog } = load("transporter-catalog");
 const catalog = normalizeCcipCatalog(chains, tokens, baseChains);
+const parsedConfig = parseTransporterConfig(transporterHtml);
+assert.equal(JSON.stringify(parsedConfig), JSON.stringify(transporterConfig), "Flight chunks are joined before parsing");
+assert.throws(() => parseTransporterConfig('<script>self.__next_f.push((()=>{throw Error("executed")})())</script>'), /format changed/, "page code must never execute");
+const combined = mergeTransporterCatalog(catalog, parsedConfig, baseChains);
+assert.equal(combined.tokens.length, catalog.tokens.length + 2, "include Transporter assets absent from the CCIP directory");
+assert.equal(combined.tokens.find(t => t.address === address(6)).symbol, "$TEST", "decode Flight dollar escaping");
+assert.equal(combined.tokens.find(t => t.address === address(6)).ccip.destinations[0].chainKey, "base");
+assert.equal(combined.chains.find(c => c.chainKey === "ethereum").ccip.router, address(10), "live directory router overrides snapshot");
 const source = catalog.tokens.find(t => t.address === address(1));
 const dest = catalog.tokens.find(t => t.address === address(2));
 assert.ok(dest, "receive-only deployments must remain in the catalog");
@@ -105,6 +125,12 @@ assert.equal((await getCcipQuote(request)).quotes[0].duration, undefined, "laten
 failFees = true;
 await assert.rejects(getCcipQuote(request), /503/);
 await assert.rejects(getCcipQuote({ ...request, amount: undefined }), /Select a CCIP/);
+modules.clear();
+failDirectory = true;
+failBaseCatalog = true;
+const standalone = await load("ccip-api").getCcipCatalog();
+assert.equal(standalone.tokens.length, 2, "Transporter catalog remains available during directory and LayerZero outages");
+assert.ok(standalone.warnings.length);
 
 let baseAvailable = true;
 let ccipAvailable = true;

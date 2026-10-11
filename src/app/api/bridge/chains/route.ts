@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
     const chains = new Map<string, BridgeChain>((baseOk && base.status === "fulfilled" ? base.value.data.chains : []).map((chain: BridgeChain) => [chain.chainKey, chain]));
     if (ccip.status === "fulfilled") for (const chain of ccip.value.chains) if (!chains.has(chain.chainKey)) chains.set(chain.chainKey, chain);
     const warnings = [...(!baseOk ? ["Some networks are temporarily unavailable."] : []), ...(ccip.status === "rejected" ? ["CCIP networks are temporarily unavailable."] : [])];
+    if (ccip.status === "fulfilled") warnings.push(...(ccip.value.warnings ?? []));
     return NextResponse.json({ chains: [...chains.values()], warnings });
   } catch (error) {
     return NextResponse.json(

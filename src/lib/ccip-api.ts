@@ -1,6 +1,7 @@
 import { viemChainById } from "./viem-chains-by-id";
 import type { BridgeChain, BridgeToken } from "./bridge-types";
 import { bridgeTokenKey, ccipFeeQuery, normalizeCcipQuote, resolveCcipQuote, type CcipCatalog, type CcipChain, type CcipQuoteRequest } from "./ccip";
+import { mergeTransporterCatalog, parseTransporterConfig } from "./transporter-catalog";
 
 const DIRECTORY = "https://docs.chain.link/api/ccip/v1";
 const TRANSPORTER = "https://app.transporter.io/api/h";
@@ -97,12 +98,25 @@ export function normalizeCcipCatalog(chainResponse: unknown, tokenResponse: unkn
 }
 
 export const getCcipCatalog = cached(async () => {
-  const [chains, tokens, baseChains] = await Promise.all([
-    fetchJson(`${DIRECTORY}/chains?environment=mainnet`),
-    fetchJson(`${DIRECTORY}/tokens?environment=mainnet`),
-    getBaseChains(),
+  const [directory, transporter, baseChains] = await Promise.all([
+    Promise.all([fetchJson(`${DIRECTORY}/chains?environment=mainnet`), fetchJson(`${DIRECTORY}/tokens?environment=mainnet`)]).catch(() => null),
+    fetch("https://app.transporter.io/", { cache: "no-store", signal: AbortSignal.timeout(12_000) }).then(async response => {
+      if (!response.ok) throw new Error("Transporter unavailable.");
+      return parseTransporterConfig(await response.text());
+    }).catch(() => null),
+    getBaseChains().catch(() => [] as BridgeChain[]),
   ]);
-  return normalizeCcipCatalog(chains, tokens, baseChains);
+  let catalog: CcipCatalog = { chains: [], tokens: [], warnings: [] };
+  if (directory) {
+    try { catalog = normalizeCcipCatalog(directory[0], directory[1], baseChains); }
+    catch { catalog.warnings = ["Some CCIP directory assets are temporarily unavailable."]; }
+  } else catalog.warnings = ["Some CCIP directory assets are temporarily unavailable."];
+  if (transporter) {
+    try { catalog = mergeTransporterCatalog(catalog, transporter, baseChains); }
+    catch { catalog.warnings = [...(catalog.warnings ?? []), "Transporter's additional assets are temporarily unavailable."]; }
+  } else catalog.warnings = [...(catalog.warnings ?? []), "Transporter's additional assets are temporarily unavailable."];
+  if (!catalog.tokens.length) throw new Error("CCIP token catalogs are temporarily unavailable.");
+  return catalog;
 });
 
 export class CcipRequestError extends Error {}

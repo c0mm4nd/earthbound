@@ -8,6 +8,7 @@ export interface CcipChain extends BridgeChain {
 export interface CcipCatalog {
   chains: CcipChain[];
   tokens: BridgeToken[];
+  warnings?: string[];
 }
 
 export interface CcipQuoteRequest {

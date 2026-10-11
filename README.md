@@ -22,7 +22,9 @@ Earthbound supports direct transfers, optional API routes, custom OFT configs, a
 
 ### CCIP quotes
 
-The token and chain selectors merge the public [CCIP directory](https://docs.chain.link/ccip/directory/), which [Transporter references for supported assets](https://www.transporter.io/help/article/supported-blockchains-and-tokens), with the existing catalog. Deployments are deduplicated by chain and address; destination availability follows the directory's directed token routes, not symbol matching. Catalog requests are deduplicated and cached for five minutes. An unavailable CCIP catalog leaves existing routes available and shows a notice.
+The token and chain selectors merge Transporter's live curated token configuration and the public [CCIP directory](https://docs.chain.link/ccip/directory/) with the existing catalog. Transporter includes assets that are not yet present in the public directory, so both sources are retained. Deployments are deduplicated by chain and address; destination availability follows each source's directed token routes, not symbol matching. Catalog requests are deduplicated and cached for five minutes. Each source can fall back independently and displays a notice when unavailable.
+
+Transporter currently serializes its curated list into its server-rendered page. The adapter parses only JSON records from that response and never executes page scripts. Its network identifiers and native currencies are mapped in `src/lib/transporter-networks.ts`; live directory router addresses take precedence over that snapshot. A changed page format falls back to the public directory rather than silently returning an empty catalog.
 
 For supported EVM → EVM pairs, Earthbound automatically requests Transporter's `getTotalFeesEstimate` and `getLaneLatency` APIs through the server, independently of the **Use API routes** toggle. Quotes require no API key or OFT discovery. Amounts use integer arithmetic, account for token transfer deductions and destination decimals, and show the native CCIP fee separately from source transaction gas. Missing USD valuations are not treated as zero fees.
 
