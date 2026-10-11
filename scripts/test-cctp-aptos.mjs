@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { createLoader } from './helpers/load-ts.mjs';
+const load = createLoader();
+const { cctpNetwork, isCctpUsdc, buildCctpEstimates } = load('cctp');
+const { normalizeCctpRecipient } = load('cctp-recipients');
+const aptos = cctpNetwork(9);
+assert.equal(aptos.family, 'APTOS');
+assert.equal(isCctpUsdc(aptos, '0x' + aptos.usdc.slice(2).padStart(64, '0')), true);
+assert.equal(isCctpUsdc(aptos, aptos.usdc + '::usdc::USDC'), false);
+assert.equal(normalizeCctpRecipient('APTOS', '0xA'), '0x' + 'a'.padStart(64, '0'));
+for (const address of ['0x0', '0x' + '1'.repeat(65), 'not an account']) assert.throws(() => normalizeCctpRecipient('APTOS', address));
+const quotes = buildCctpEstimates({ sourceDomain: 9, destinationDomain: 0, sourceToken: aptos.usdc, destinationToken: cctpNetwork(0).usdc, amount: '9007199254.740993' }, [{ finalityThreshold: 1000, minimumFee: 1 }, { finalityThreshold: 2000, minimumFee: 0 }]).quotes;
+assert.equal(quotes.length, 1);
+assert.equal(quotes[0].mode, 'standard');
+assert.equal(quotes[0].destinationAmount, '9007199254740993');
+console.log('CCTP Aptos: fungible asset identity, padded addresses, integer precision and Standard-only estimates passed.');

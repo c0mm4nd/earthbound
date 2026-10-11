@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:cctp": "node --test scripts/test-cctp.mjs scripts/test-cctp-solana.mjs scripts/test-cctp-aptos.mjs scripts/test-cctp-sui.mjs scripts/test-cctp-starknet.mjs scripts/test-cctp-stellar.mjs",
     "test:ccip": "node --test scripts/test-ccip.mjs scripts/test-ccip-execution.mjs scripts/test-ccip-solana.mjs scripts/test-ccip-aptos.mjs scripts/test-ccip-canton.mjs scripts/test-ccip-native.mjs scripts/test-ccip-wrapped-native.mjs",
     "test:ccip:solana": "node scripts/test-ccip-solana.mjs",
     "test:ccip:aptos": "node scripts/test-ccip-aptos.mjs",

@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { createLoader } from './helpers/load-ts.mjs';
+const load = createLoader();
+const { cctpNetwork, isCctpUsdc, buildCctpEstimates } = load('cctp');
+const { normalizeCctpRecipient } = load('cctp-recipients');
+const starknet = cctpNetwork(25);
+assert.equal(starknet.family, 'STARKNET');
+assert.equal(isCctpUsdc(starknet, '0x' + BigInt(starknet.usdc).toString(16)), true);
+assert.equal(isCctpUsdc(starknet, 'USDC'), false);
+assert.equal(normalizeCctpRecipient('STARKNET', '0xabc'), '0x' + 'abc'.padStart(64, '0'));
+const max = '0x' + (2n ** 251n - 1n).toString(16);
+assert.equal(normalizeCctpRecipient('STARKNET', max), '0x' + max.slice(2).padStart(64, '0'));
+for (const address of ['0x0', '0x' + (2n ** 251n).toString(16), '0x' + 'f'.repeat(64)]) assert.throws(() => normalizeCctpRecipient('STARKNET', address));
+const quotes = buildCctpEstimates({ sourceDomain: 25, destinationDomain: 0, sourceToken: starknet.usdc, destinationToken: cctpNetwork(0).usdc, amount: '1' }, [{ finalityThreshold: 1000, minimumFee: 1 }, { finalityThreshold: 2000, minimumFee: 0 }]).quotes;
+assert.equal(quotes.length, 2);
+console.log('CCTP Starknet: native USDC identity, contract-address bounds and both fee modes passed.');

@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { createLoader } from './helpers/load-ts.mjs';
+const load = createLoader();
+const { cctpNetwork, isCctpUsdc, buildCctpEstimates } = load('cctp');
+const { normalizeCctpRecipient } = load('cctp-recipients');
+const sui = cctpNetwork(8);
+assert.equal(sui.family, 'SUI');
+assert.equal(isCctpUsdc(sui, sui.usdc), true);
+for (const token of [sui.usdc.toLowerCase(), sui.usdc.split('::')[0], sui.usdc + '::extra', '0x1::usdc::USDC']) assert.equal(isCctpUsdc(sui, token), false);
+assert.equal(normalizeCctpRecipient('SUI', '0xA'), '0x' + 'a'.padStart(64, '0'));
+for (const address of ['0x0', '0x' + '1'.repeat(65), sui.usdc]) assert.throws(() => normalizeCctpRecipient('SUI', address));
+const result = buildCctpEstimates({ sourceDomain: 8, destinationDomain: 0, sourceToken: sui.usdc, destinationToken: cctpNetwork(0).usdc, amount: '1' }, [{ finalityThreshold: 1000, minimumFee: 1 }, { finalityThreshold: 2000, minimumFee: 0 }]);
+assert.equal(result.quotes.length, 1);
+assert.equal(result.quotes[0].mode, 'standard');
+assert.equal(result.executionReady, false);
+console.log('CCTP Sui: exact Move coin type, address normalization and Standard-only estimates passed.');

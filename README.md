@@ -55,6 +55,26 @@ Validation:
 - `node scripts/test-execution-history.mjs` — durable records and interrupted-transfer recovery.
 - `node scripts/test-ccip-fork.mjs` — LINK Ethereum → Base approval and source send on a **local Anvil fork**; set `CCIP_FORK_DEST=solana` or `CCIP_FORK_DEST=aptos` for non-EVM destinations. Start the local app on port 3000 and an Ethereum Anvil fork on port 18545 first (commands are in the script). It funds only fork state, sends only to localhost, and restores the snapshot afterward. It does not test real destination delivery or broadcast mainnet transactions.
 
+### CCTP development preview
+
+`GET /api/bridge/cctp` returns the verified Circle native-USDC catalog for 30 mainnet domains, including Solana, Aptos, Sui, Starknet and Stellar. Domain IDs are separate from EVM chain IDs. BNB (USYC only) and legacy Noble are excluded from this USDC V2 preview.
+
+`POST /api/bridge/cctp` estimates Standard and supported Fast protocol fees from Circle's public Iris API. Pass `sourceDomain`, `destinationDomain`, `sourceToken`, `destinationToken`, and a decimal string `amount`; an optional `recipient` is validated for the destination family. Both tokens must match Circle's native USDC addresses. For example:
+
+```json
+{
+  "sourceDomain": 0,
+  "destinationDomain": 6,
+  "sourceToken": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "destinationToken": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "amount": "100"
+}
+```
+
+This is a **fee preview, not an executable route**: `executionReady` is always false. It is separate from the transfer form's OFT/CCIP quote comparison. Gas, forwarding fees, Fast allowance and onchain burn limits are not included or checked. Wallet burn submission, attestation binding, destination minting and recovery are still pending. Fees use integer arithmetic with upward rounding; Standard fees are read from the API, never assumed to be zero. Stellar source dust is explicit, destination amounts use seven decimals, and inbound routes flag the required `CctpForwarder`.
+
+Run `npm run test:cctp` for core/API tests and independent tests for each non-EVM family. These tests do not send transactions or claim destination settlement. Protocol references: [Circle domains](https://developers.circle.com/cctp/concepts/supported-chains-and-domains), [native USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses), [fee API](https://developers.circle.com/api-reference/cctp/all/get-burn-usdc-fees), and [Stellar behavior](https://developers.circle.com/cctp/references/stellar).
+
 ### Default: direct OFT transfers
 
 The main transfer form now defaults to direct Endpoint V2 OFT contract calls on the configured EVM networks, Solana ↔ EVM and verified TON ↔ EVM routes, and EVM → Aptos / Starknet / Tron / Sui / Stellar routes. Earthbound discovers the mesh from LayerZero metadata by token address, verifies both peers, underlying tokens, decimals, and enforced receive gas, then calls `quoteOFT`, `quoteSend`, and `send`. ERC20 approvals target the OFT contract directly. This path does not use Stargate quote transactions or its product-fee wrapper and needs no LayerZero Transfer API key.

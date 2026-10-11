@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import { StrKey } from '@stellar/stellar-sdk';
+import { createLoader } from './helpers/load-ts.mjs';
+const load = createLoader();
+const { cctpNetwork, isCctpUsdc, buildCctpEstimates } = load('cctp');
+const { normalizeCctpRecipient } = load('cctp-recipients');
+const stellar = cctpNetwork(27), ethereum = cctpNetwork(0);
+assert.equal(stellar.decimals, 7);
+assert.equal(isCctpUsdc(stellar, stellar.usdc), true);
+assert.equal(isCctpUsdc(stellar, stellar.usdc.toLowerCase()), false);
+for (const address of [StrKey.encodeEd25519PublicKey(Buffer.alloc(32, 1)), StrKey.encodeContract(Buffer.alloc(32, 2)), StrKey.encodeMed25519PublicKey(Buffer.alloc(40, 3))]) {
+  assert.equal(normalizeCctpRecipient('STELLAR', address), address, 'G/C/M identity and muxed ID must survive');
+  assert.throws(() => normalizeCctpRecipient('STELLAR', address.slice(0, -1) + '0'));
+}
+assert.throws(() => normalizeCctpRecipient('STELLAR', StrKey.encodeEd25519SecretSeed(Buffer.alloc(32, 4))));
+const rates = [{ finalityThreshold: 2000, minimumFee: 0 }];
+const outbound = { sourceDomain: 27, destinationDomain: 0, sourceToken: stellar.usdc, destinationToken: ethereum.usdc, amount: '0.1234567' };
+const quote = buildCctpEstimates(outbound, rates).quotes[0];
+assert.equal(quote.requestedSourceAmount, '1234567');
+assert.equal(quote.sourceAmount, '1234560');
+assert.equal(quote.sourceDust, '7');
+assert.equal(quote.messageAmount, '123456');
+assert.equal(quote.destinationAmount, '123456');
+assert.throws(() => buildCctpEstimates({ ...outbound, amount: '0.0000009' }, rates), /at least/);
+const inbound = buildCctpEstimates({ sourceDomain: 0, destinationDomain: 27, sourceToken: ethereum.usdc, destinationToken: stellar.usdc, amount: '0.123456' }, rates).quotes[0];
+assert.equal(inbound.destinationAmount, '1234560');
+assert.equal(inbound.requiresStellarForwarder, true);
+assert.equal(inbound.executionReady, false);
+assert.equal(inbound.forwardingIncluded, false, 'CctpForwarder is not Circle Forwarding Service');
+console.log('CCTP Stellar: G/C/M recipients, seven/six decimal conversion, explicit dust and mandatory forwarder gate passed.');
