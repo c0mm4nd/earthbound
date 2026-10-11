@@ -26,7 +26,7 @@ The token and chain selectors merge Transporter's live curated token configurati
 
 Transporter currently serializes its curated list into its server-rendered page. The adapter parses only JSON records from that response and never executes page scripts. Its network identifiers and native currencies are mapped in `src/lib/transporter-networks.ts`; live directory router addresses take precedence over that snapshot. A changed page format falls back to the public directory rather than silently returning an empty catalog.
 
-For supported pairs, Earthbound requests CCIP quotes independently of the **Use API routes** toggle. EVM sources use Transporter's `getTotalFeesEstimate`; Solana → EVM uses `getFeeData` with chain-specific message encoding. Aptos → EVM calls the router's HTTP View API (`get_fee`) because the Transporter Aptos fee endpoint currently returns an upstream error. Latency comes from `getLaneLatency`. Quotes require no API key or OFT discovery. Amounts use integer arithmetic, account for token transfer deductions and destination decimals, and show the native CCIP fee separately from source transaction gas. Missing USD valuations are not treated as zero fees.
+For supported pairs, Earthbound requests CCIP quotes independently of the **Get quotes from third parties** toggle. EVM sources use Transporter's `getTotalFeesEstimate`; Solana → EVM uses `getFeeData` with chain-specific message encoding. Aptos → EVM calls the router's HTTP View API (`get_fee`) because the Transporter Aptos fee endpoint currently returns an upstream error. Latency comes from `getLaneLatency`. Quotes require no API key or OFT discovery. Amounts use integer arithmetic, account for token transfer deductions and destination decimals, and show the native CCIP fee separately from source transaction gas. Missing USD valuations are not treated as zero fees.
 
 Supported EVM-source token routes to EVM, Solana and Aptos execute inside Earthbound. Transactions are encoded locally using the catalog router and chain selector. The wallet approves the exact token amount (resetting a nonzero insufficient allowance first), then calls `ccipSend` with native fee payment, no message data, and zero receiver callback gas. The displayed fee includes a 1% ceiling; the transaction sends only the current router fee. Quotes are refreshed before approval and before sending. Changes to the route, receiver, amount, router, fee ceiling or estimated receive amount stop execution for review. Every transaction is simulated before wallet submission. Hedera native payment applies the documented 8-to-18 decimal conversion.
 
@@ -84,7 +84,7 @@ The TON layouts and credit policy were checked against deployed verified source 
 
 Receive amounts reflect on-chain quotes, including local/shared decimal conversion and any OFT contract fee or reward. Direct integration removes the Stargate product fee; it does not promise 1:1 receipt for contracts that charge their own fee, or eliminate messaging and source transaction gas costs.
 
-Unsupported meshes, native assets, unsupported source/destination families, or failed validation stop with an error. There is no automatic fallback to a fee-bearing API route. Users can explicitly enable **Use API routes (provider fees may apply)** for the existing API flow below. Custom OFT discovery/import remains available for selecting a specific mesh.
+Unsupported meshes, native assets, unsupported source/destination families, or failed validation stop with an error. There is no automatic fallback to a fee-bearing API route. Users can explicitly enable **Get quotes from third parties** (provider fees may apply) for the existing API flow below. Custom OFT discovery/import remains available for selecting a specific mesh.
 
 Solana uses a lazily loaded official OFT SDK adapter. It validates the OFT Store PDA, program ownership, mint, peer, decimal conversion, and token program. EVM → Solana derives the recipient ATA and adds only missing account-creation rent beyond the enforced receive value. Solana → EVM builds an unsigned v0 transaction with the official LayerZero lookup table and simulates it before wallet signing. Wallet execution checks the payer and validity before signing, then confirms the returned signature via HTTP status polling. Wallet-broadcast transactions are not expired using the pre-wallet blockhash because the wallet may rebuild the message. When the app broadcasts a known signed message itself, expiration requires finalized block height plus a historical signature lookup. RPC errors remain pending; on-chain execution errors are reported as failures.
 
@@ -100,14 +100,14 @@ Direct transactions are re-quoted before execution and again after approvals. Wo
 
 ### 1. Standard API routes
 
-This is the default provider when users explicitly enable API routes.
+This is the default provider when users explicitly enable **Get quotes from third parties**.
 
 - Quotes, user steps, and status requests are routed through `https://stargate.finance/api/vt/*`
 - The interface labels this provider **Standard**
 
 ### 2. LayerZero Direct API
 
-When API routes are enabled, users can select **Direct API** from the UI.
+When **Get quotes from third parties** is enabled, users can select **Direct API** from the UI.
 
 - Requests are routed through `https://transfer.layerzero-api.com/v1/*`
 - The app asks the user for a LayerZero API key before enabling direct mode

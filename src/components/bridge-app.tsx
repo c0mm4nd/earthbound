@@ -1857,7 +1857,7 @@ function LayerZeroApiKeyModal({
             </h2>
             <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
               Enter your LayerZero Transfer API key before switching to Direct API mode. Leave it
-              blank to use the default API routes. The key is stored only in this browser.
+              blank to get quotes from the default third-party provider. The key is stored only in this browser.
             </p>
           </div>
 
@@ -5317,7 +5317,7 @@ export function BridgeApp() {
     isCustomOftSource
       ? customOftRequestState.reason
       : isLayerZeroFallback
-        ? "Using default API routes. Add an API key to enable Direct API."
+        ? "Getting quotes from the default third-party provider. Add an API key to enable Direct API."
         : null;
   const executionCapabilityCopy =
     quote?.ccip && sourceChainUsesEvmWallet && !sourceChainHasConfiguredWallet
@@ -5556,7 +5556,7 @@ export function BridgeApp() {
                   <div className="mt-3 rounded-[1.25rem] border border-white/18 bg-white/[0.04] px-4 py-3 text-sm text-white">
                     <p>{quoteError ?? providerNoticeCopy ?? executionCapabilityCopy}</p>
                     {!useApiRoutes && quoteError?.includes("Enable API routes") ? (
-                      <button type="button" onClick={() => setUseApiRoutes(true)} className="mt-2 rounded-full border border-white/20 px-3 py-2 text-xs hover:bg-white/10">Use API routes (provider fees apply)</button>
+                      <button type="button" onClick={() => setUseApiRoutes(true)} className="mt-2 rounded-full border border-white/20 px-3 py-2 text-xs hover:bg-white/10">Get quotes from third parties (provider fees may apply)</button>
                     ) : null}
                   </div>
                 ) : null}
@@ -5646,7 +5646,7 @@ export function BridgeApp() {
                       disabled={executionState.phase === "running"}
                       onCheckedChange={setUseApiRoutes}
                     >
-                      <span>Use API routes <span className="text-[var(--muted-strong)]">(CCIP always included)</span></span>
+                      <span>Get quotes from third parties <span className="text-[var(--muted-strong)]">(CCIP always included)</span></span>
                     </ToggleSwitch>
                   ) : null}
                   <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">

@@ -375,7 +375,7 @@ export async function buildDirectOftQuote(
   }
   if (!matches.length)
     throw new Error(
-      "No direct OFT mesh found for these token addresses. You can explicitly select API routes or import a custom OFT.",
+      "No direct OFT mesh found for these token addresses. You can enable Get quotes from third parties or import a custom OFT.",
     );
   if (matches.length > 1) {
     const results = await Promise.allSettled(
