@@ -84,7 +84,6 @@ import {
   switchInjectedEvmChain,
 } from "@/lib/injected-evm";
 import {
-  walletChainByKey,
   type SupportedChainId,
 } from "@/lib/wagmi";
 import { useRpcConfig } from "@/components/providers";
@@ -2796,7 +2795,7 @@ export function BridgeApp() {
   const sourceChainUsesEvmWallet = sourceChainType === "EVM";
   const sourceChainHasConfiguredWallet =
     sourceChainType === "EVM" &&
-    Boolean(activeSrcChain && activeSrcChain.chainKey in walletChainByKey);
+    Boolean(activeSrcChain && wagmiConfig.chains.some(configured => configured.id === activeSrcChain.chainId));
   const activeExternalWalletSession = sourceChainType
     ? bridgeWallets.walletSessionsByChainType[sourceChainType] ?? null
     : null;
@@ -3410,7 +3409,7 @@ export function BridgeApp() {
       throw new Error("Expected an EVM chain.");
     }
 
-    if (chain.chainKey in walletChainByKey) {
+    if (wagmiConfig.chains.some(configured => configured.id === chain.chainId)) {
       await switchChainAsync({ chainId: chain.chainId as SupportedChainId });
       return;
     }
@@ -4191,7 +4190,7 @@ export function BridgeApp() {
     }
 
     balanceSwitchAttemptRef.current = attemptKey;
-    if (activeSrcChain.chainKey in walletChainByKey) {
+    if (wagmiConfig.chains.some(configured => configured.id === activeSrcChain.chainId)) {
       void switchChainAsync({ chainId: activeSrcChain.chainId as SupportedChainId }).catch(
         () => undefined,
       );
@@ -4212,6 +4211,7 @@ export function BridgeApp() {
     sourceChainUsesEvmWallet,
     evmConnector,
     switchChainAsync,
+    wagmiConfig,
   ]);
 
   useEffect(() => {

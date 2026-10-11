@@ -43,6 +43,7 @@ const { useBridgeWallets: runWalletHook } = load('../src/lib/bridge-wallet-hooks
   '@tonconnect/ui-react': { useTonConnectUI: () => [{ setConnectionNetwork: network => calls.push(`ton:network:${network}`), openModal: async () => calls.push('ton:select'), disconnect: async () => { calls.push('ton:disconnect'); tonWallet = null; } }], useTonWallet: () => tonWallet, useTonAddress: () => tonWallet?.account.address ?? '' },
   '@/lib/wallet-options': { walletIdentifier: (wallet) => wallet.id ?? wallet.name },
   './stellar-wallet': { watchStellarWallet: () => () => {} },
+  './canton-wallet': { watchCantonWallet: () => () => {} },
   '@/lib/bridge-wallets': {
     getExternalWalletOptions: () => [],
     connectExternalWallet: async (chain, walletId) => { calls.push(`${chain}:connect:${walletId}`); return { address: 'manual-account', label: walletId, walletId }; },
