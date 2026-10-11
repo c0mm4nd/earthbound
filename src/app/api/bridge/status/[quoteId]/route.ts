@@ -16,6 +16,9 @@ export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const { quoteId } = await context.params;
     const searchParams = new URL(request.url).searchParams;
+    if (searchParams.get("provider") === "ccip" || quoteId.startsWith("ccip:")) {
+      return NextResponse.json({ error: "CCIP estimates do not create a tracked transfer. Track sent transfers on Transporter." }, { status: 400 });
+    }
     const apiKey = request.headers.get("x-bridge-api-key");
     const txHash = searchParams.get("txHash");
     const provider = (searchParams.get("provider") === "layerzero"

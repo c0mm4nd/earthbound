@@ -9,6 +9,9 @@ import type { BridgeApiProvider } from "@/lib/bridge-types";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    if (body?.provider === "ccip" || (typeof body?.quoteId === "string" && body.quoteId.startsWith("ccip:"))) {
+      return NextResponse.json({ error: "CCIP currently supports quotes only." }, { status: 400 });
+    }
     const apiKey = request.headers.get("x-bridge-api-key");
     const provider = (body.provider === "layerzero"
       ? "layerzero"

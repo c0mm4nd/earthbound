@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchLayerZeroJson } from "@/lib/layerzero";
+import { getCcipCatalog } from "@/lib/ccip-api";
+import type { BridgeChain } from "@/lib/bridge-types";
 
 export async function GET(request: NextRequest) {
   try {
     const search = new URL(request.url).searchParams.toString();
     const path = `/chains${search ? `?${search}` : ""}`;
-    const { response, data } = await fetchLayerZeroJson(path);
-
-    return NextResponse.json(data, { status: response.status });
+    const [base, ccip] = await Promise.allSettled([fetchLayerZeroJson(path), getCcipCatalog()]);
+    const baseOk = base.status === "fulfilled" && base.value.response.ok && Array.isArray(base.value.data?.chains);
+    if (!baseOk && ccip.status === "rejected") throw new Error("Chain catalogs are temporarily unavailable.");
+    const chains = new Map<string, BridgeChain>((baseOk && base.status === "fulfilled" ? base.value.data.chains : []).map((chain: BridgeChain) => [chain.chainKey, chain]));
+    if (ccip.status === "fulfilled") for (const chain of ccip.value.chains) if (!chains.has(chain.chainKey)) chains.set(chain.chainKey, chain);
+    const warnings = [...(!baseOk ? ["Some networks are temporarily unavailable."] : []), ...(ccip.status === "rejected" ? ["CCIP networks are temporarily unavailable."] : [])];
+    return NextResponse.json({ chains: [...chains.values()], warnings });
   } catch (error) {
     return NextResponse.json(
       {

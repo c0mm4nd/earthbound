@@ -6,6 +6,7 @@ import {
   fetchStargateV2ApiJson,
 } from "@/lib/layerzero";
 import { normalizeBridgeQuoteResponse } from "@/lib/bridge-normalization";
+import { CcipRequestError, getCcipQuote } from "@/lib/ccip-api";
 import type {
   BridgeApiProvider,
   BridgeQuote,
@@ -158,6 +159,13 @@ function normalizeQuoteResponse(data: unknown) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    if (body?.provider === "ccip") {
+      try {
+        return NextResponse.json(await getCcipQuote(body));
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : "CCIP quote unavailable." }, { status: error instanceof CcipRequestError ? 400 : 502 });
+      }
+    }
     const apiKey = request.headers.get("x-bridge-api-key");
     const provider = (body.provider === "layerzero"
       ? "layerzero"
