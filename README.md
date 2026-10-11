@@ -11,16 +11,16 @@ This repository contains the Next.js application and its server-side adapters fo
 - User-managed custom OFT configs for direct LayerZero OFT transfers
 - Automatic live quotes with periodic refresh
 - Route comparison and selection in a single-page interface
-- CCIP token catalog and live Transporter fee estimates alongside existing routes
+- CCIP token catalog, API quotes, wallet execution and persistent transfer tracking
 - Execution tracking with transfer history and LayerZeroScan links
 - Chain-aware address validation and per-chain wallet execution flows
 - Support for EVM and multiple non-EVM wallet environments
 
 ## API Modes
 
-Earthbound supports direct transfers, optional API routes, custom OFT configs, and CCIP quote comparison.
+Earthbound supports direct transfers, optional API routes, custom OFT configs, and CCIP transfers.
 
-### CCIP quotes
+### CCIP transfers
 
 The token and chain selectors merge Transporter's live curated token configuration and the public [CCIP directory](https://docs.chain.link/ccip/directory/) with the existing catalog. Transporter includes assets that are not yet present in the public directory, so both sources are retained. Deployments are deduplicated by chain and address; destination availability follows each source's directed token routes, not symbol matching. Catalog requests are deduplicated and cached for five minutes. Each source can fall back independently and displays a notice when unavailable.
 
@@ -28,7 +28,18 @@ Transporter currently serializes its curated list into its server-rendered page.
 
 For supported EVM → EVM pairs, Earthbound automatically requests Transporter's `getTotalFeesEstimate` and `getLaneLatency` APIs through the server, independently of the **Use API routes** toggle. Quotes require no API key or OFT discovery. Amounts use integer arithmetic, account for token transfer deductions and destination decimals, and show the native CCIP fee separately from source transaction gas. Missing USD valuations are not treated as zero fees.
 
-CCIP currently provides **quotes only**: the interface offers **Open Transporter** to review and send. These estimates cannot enter Earthbound's approval, signing, or transaction execution flow. Native-token wrapping and non-EVM CCIP quotes are not implemented; existing OFT routes retain their current support. Transporter endpoints are application APIs, so their schema or availability can change; failures are surfaced without discarding successful quotes from other providers. Run `node scripts/test-ccip.mjs` for catalog, direction, precision, cache and failure regressions.
+Supported EVM → EVM token routes execute inside Earthbound. Transactions are encoded locally using the catalog router and chain selector. The wallet approves the exact token amount (resetting a nonzero insufficient allowance first), then calls `ccipSend` with native fee payment, no message data, and zero receiver callback gas. The displayed fee includes a 1% ceiling; the transaction sends only the current router fee. Quotes are refreshed before approval and before sending. Changes to the route, receiver, amount, router, fee ceiling or estimated receive amount stop execution for review. Every transaction is simulated before wallet submission. Hedera native payment applies the documented 8-to-18 decimal conversion.
+
+Submitted bridge hashes are saved before receipt confirmation. The CCIP v2 messages API tracks destination delivery, with an in-app **Check status** action after reload or a tracking outage. An indexing delay remains pending; destination execution failures are flagged for recovery without inviting another source transfer. The CCIP Explorer link provides message and recovery details. A quoted receive amount is an estimate, not an on-chain minimum guarantee.
+
+Native-token wrapping and non-EVM CCIP routes are not implemented; existing OFT routes retain their current support. EVM execution requires a configured source RPC. Transporter endpoints are application APIs, so their schema or availability can change; failures are surfaced without discarding successful quotes from other providers.
+
+Validation:
+
+- `node scripts/test-ccip.mjs` — catalog, direction, precision, cache and provider isolation.
+- `node scripts/test-ccip-execution.mjs` — approvals, calldata, fee and context guards, submission persistence and CCIP status mapping.
+- `node scripts/test-execution-history.mjs` — durable records and interrupted-transfer recovery.
+- `node scripts/test-ccip-fork.mjs` — LINK Ethereum → Base approval and source send on a **local Anvil fork**. Start the local app on port 3000 and an Ethereum Anvil fork on port 18545 first (commands are in the script). It funds only fork state, sends only to localhost, and restores the snapshot afterward. It does not test real destination delivery or broadcast mainnet transactions.
 
 ### Default: direct OFT transfers
 
