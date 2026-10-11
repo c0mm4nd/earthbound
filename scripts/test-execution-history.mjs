@@ -1,12 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { Script } from 'node:vm';
-import ts from 'typescript';
-const cjs = { exports: {} };
-new Script(ts.transpileModule(readFileSync(new URL('../src/lib/execution-history.ts', import.meta.url), 'utf8'), {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
-}).outputText).runInNewContext({ module: cjs, exports: cjs.exports });
-const { EXECUTION_HISTORY_KEY: key, loadExecutionHistory, parseExecutionHistory, mergeExecutionHistory, recoverExecutionHistory } = cjs.exports;
+import { createLoader } from './helpers/load-ts.mjs';
+const { EXECUTION_HISTORY_KEY: key, loadExecutionHistory, parseExecutionHistory, mergeExecutionHistory, recoverExecutionHistory } = createLoader()('execution-history');
 function memoryStorage() {
   const data = new Map();
   return { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value), removeItem: (key) => data.delete(key) };
@@ -41,3 +35,10 @@ assert.equal(recoverExecutionHistory([{ ...ccipItem, ccipSubmission: { ...ccipIt
 assert.equal(parseExecutionHistory(JSON.stringify([ccipItem])).length, 1);
 assert.equal(parseExecutionHistory(JSON.stringify([{ ...ccipItem, ccipSubmission: { hash: 'invalid' } }])).length, 0);
 console.log('CCIP interrupted send and settlement recovery passed.');
+for (const [family, hash] of [['SOLANA', '2'.repeat(88)], ['APTOS', '0x' + '2'.repeat(64)], ['CANTON', '1220' + 'a'.repeat(64)]]) {
+  const record = { ...ccipItem, ccipSubmission: { chainId: 1, family, hash, confirmed: false } };
+  assert.equal(parseExecutionHistory(JSON.stringify([record])).length, 1);
+  assert.equal(recoverExecutionHistory([record])[0].phase, 'pending');
+}
+assert.equal(parseExecutionHistory(JSON.stringify([{ ...ccipItem, ccipSubmission: { chainId: 1, family: 'SOLANA', hash: '0x' + 'a'.repeat(64), confirmed: false } }])).length, 0, 'EVM hash cannot be recovered as a Solana signature');
+console.log('Independent source-family hash recovery passed.');
