@@ -1,12 +1,16 @@
 import { isCcipTransactionHash } from "./ccip-addresses";
 import type { SolanaSubmission } from "./solana-confirmation";
 
+export type CcipNativeConversion = { chainId: number; chainKey: string; token: string; amount: string; account: string; hash?: string; confirmed: boolean };
+
 export type ExecutionHistoryItem = {
   id: string;
   quoteId: string;
   executionKey?: string;
   ccipTransferKey?: string;
   solanaSubmission?: SolanaSubmission;
+  ccipWrap?: CcipNativeConversion;
+  ccipUnwrap?: CcipNativeConversion;
   ccipSubmission?: { chainId: number; family?: string; hash: string; confirmed: boolean };
   phase: "running" | "pending" | "success" | "error";
   createdAt: number;
@@ -45,6 +49,12 @@ export function parseExecutionHistory(serialized: string | null): ExecutionHisto
       if (!["running", "pending", "success", "error"].includes(item.phase)) return false;
       if (item.solanaSubmission && typeof item.solanaSubmission.signature !== "string") return false;
       if (item.ccipSubmission && (!Number.isSafeInteger(item.ccipSubmission.chainId) || !isCcipTransactionHash(item.ccipSubmission.family ?? "EVM", item.ccipSubmission.hash) || typeof item.ccipSubmission.confirmed !== "boolean")) return false;
+      for (const conversion of [item.ccipWrap, item.ccipUnwrap]) {
+        if (conversion && (!Number.isSafeInteger(conversion.chainId) || typeof conversion.chainKey !== "string" ||
+            !/^0x[0-9a-f]{40}$/i.test(conversion.token) || !/^0x[0-9a-f]{40}$/i.test(conversion.account) ||
+            typeof conversion.amount !== "string" || !/^\d{1,78}$/.test(conversion.amount) || BigInt(conversion.amount) <= BigInt(0) || BigInt(conversion.amount) >= BigInt(2) ** BigInt(256) ||
+            (conversion.hash && !isCcipTransactionHash("EVM", conversion.hash)) || typeof conversion.confirmed !== "boolean")) return false;
+      }
       return true;
     });
   } catch { return []; }
@@ -75,9 +85,9 @@ export function loadExecutionHistory(storage: Storage, legacyStorage: Storage): 
 export function recoverExecutionHistory(items: ExecutionHistoryItem[]): ExecutionHistoryItem[] {
   return items.map((item) => item.phase === "running" ? {
     ...item,
-    phase: item.solanaSubmission || item.ccipSubmission ? "pending" : "error",
-    transferStatus: item.ccipSubmission?.confirmed ? "PENDING" : item.solanaSubmission || item.ccipSubmission ? "CONFIRMATION_PENDING" : undefined,
+    phase: item.solanaSubmission || item.ccipSubmission || item.ccipWrap?.hash ? "pending" : "error",
+    transferStatus: item.ccipSubmission?.confirmed ? "PENDING" : item.solanaSubmission || item.ccipSubmission || item.ccipWrap?.hash ? "CONFIRMATION_PENDING" : undefined,
     currentStep: undefined,
-    error: item.solanaSubmission || item.ccipSubmission ? "Check the submitted transaction before sending again." : "Execution was interrupted. Check your wallet activity before retrying.",
+    error: item.solanaSubmission || item.ccipSubmission || item.ccipWrap?.hash ? "Check the submitted transaction before sending again." : "Execution was interrupted. Check your wallet activity before retrying.",
   } : item);
 }

@@ -67,6 +67,7 @@ import {
 import { assertExecutionPlan, assertSuccessfulEvmReceipt } from "@/lib/execution-safety";
 import { buildCustomOftQuote } from "@/lib/custom-oft-quote";
 import { bridgeTokenKey, ccipTransferKey, supportsCcipPair } from "@/lib/ccip";
+import { nativeConversionTransaction } from "@/lib/ccip-wrapped-native";
 import { ccipAptosStep, inspectAptosSubmission } from "@/lib/ccip-aptos";
 import { assertCcipQuote, executeCcipTransfer } from "@/lib/ccip-execution";
 import { buildDirectOftQuote, supportsDirectOftRoute } from "@/lib/direct-oft";
@@ -1431,6 +1432,8 @@ function getExecutionPhaseLabel(phase: ExecutionPhase) {
 }
 
 function getExecutionHistoryStatus(item: ExecutionHistoryItem) {
+  if (item.ccipUnwrap && item.transferStatus === "COMPLETED" && !item.ccipUnwrap.confirmed) return item.ccipUnwrap.hash ? "Unwrap pending" : "Ready to unwrap";
+  if (item.ccipWrap?.hash && !item.ccipSubmission) return item.ccipWrap.confirmed ? "Wrapped tokens ready" : "Wrap pending";
   return item.transferStatus ? formatTransferStatus(item.transferStatus) : getExecutionPhaseLabel(item.phase);
 }
 
@@ -3605,9 +3608,66 @@ export function BridgeApp() {
     if (existing?.phase === "error" && ["FAILED", "CANCELLED"].includes(existing.transferStatus ?? "") && status.status !== "COMPLETED") return;
     const phase = status.status === "COMPLETED" ? "success" : status.status === "FAILED" || status.status === "CANCELLED" ? "error" : "pending";
     const patch = { phase, transferStatus: status.status, explorerUrl: status.explorerUrl ?? existing?.explorerUrl, error: status.error,
-      currentStep: status.substatus ?? (phase === "success" ? "CCIP transfer completed." : undefined) } as const;
+      currentStep: status.substatus ?? (phase === "success" ? existing?.ccipUnwrap && !existing.ccipUnwrap.confirmed ? "Wrapped tokens delivered. Unwrap with the destination wallet to receive native tokens." : "CCIP transfer completed." : undefined) } as const;
     updateExecutionHistoryItem(historyId, patch);
     setExecutionState(current => current.activeHistoryId === historyId ? { ...current, ...patch } : current);
+  }
+
+  async function handleNativeConversionHistory(item: ExecutionHistoryItem, operation: "wrap" | "unwrap") {
+    if (checkingHistoryId || executionLockRef.current) return;
+    const conversion = operation === "wrap" ? item.ccipWrap : item.ccipUnwrap;
+    if (!conversion || (operation === "unwrap" && item.transferStatus !== "COMPLETED")) return;
+    const chain = chainByKey.get(conversion.chainKey);
+    if (!chain || chain.chainId !== conversion.chainId || chain.chainType !== "EVM") return;
+    const patchConversion = (patch: Partial<typeof conversion>) => updateExecutionHistoryItem(item.id, operation === "wrap"
+      ? { ccipWrap: { ...conversion, ...patch } } : { ccipUnwrap: { ...conversion, ...patch } });
+    executionLockRef.current = true;
+    setCheckingHistoryId(item.id);
+    try {
+      const client = getPublicClient(wagmiConfig, { chainId: chain.chainId });
+      if (!client) throw new Error("Configure this network's RPC before continuing.");
+      let hash = conversion.hash;
+      let receipt;
+      if (!hash && operation === "wrap") throw new Error("Check wallet activity for the wrapping transaction.");
+      if (!hash) {
+        const current = getAccount(wagmiConfig);
+        if (current.address?.toLowerCase() !== conversion.account.toLowerCase()) throw new Error("Connect the destination recipient wallet to unwrap.");
+        await switchEvmChain(chain);
+        const tx = nativeConversionTransaction(chain.chainId, conversion.token, conversion.amount, "unwrap");
+        await fetchJson("/api/bridge/ccip/native", { method: "POST", body: JSON.stringify({ chainId: chain.chainId, token: conversion.token, amount: conversion.amount, operation: "unwrap" }) });
+        const balance = await readEvmContractForChain<bigint>({ chain, address: conversion.token as Address, abi: erc20Abi, functionName: "balanceOf", args: [conversion.account] });
+        if (balance < BigInt(conversion.amount)) throw new Error("The wrapped balance is below the quoted receive amount. Check delivery and the wallet balance before unwrapping.");
+        const ready = getAccount(wagmiConfig);
+        if (ready.address?.toLowerCase() !== conversion.account.toLowerCase() || ready.chainId !== chain.chainId) throw new Error("Wallet or network changed before unwrapping.");
+        hash = await sendEvmTransactionForChain(chain, { ...tx, from: conversion.account as Address });
+        patchConversion({ hash, confirmed: false });
+        receipt = await waitForTransactionReceipt(wagmiConfig, {
+          chainId: chain.chainId, hash: hash as Hex,
+          onReplaced: ({ reason, transactionReceipt }) => {
+            if (reason === "repriced") patchConversion({ hash: transactionReceipt.transactionHash });
+            else {
+              if (reason === "cancelled") patchConversion({ hash: undefined, confirmed: false });
+              throw new Error("Unwrapping was cancelled or replaced. Check wallet activity before retrying.");
+            }
+          },
+        });
+      }
+      receipt ??= await client.getTransactionReceipt({ hash: hash as Hex });
+      if (receipt.status !== "success") {
+        patchConversion({ hash: undefined, confirmed: false });
+        if (operation === "wrap") updateExecutionHistoryItem(item.id, { ccipWrap: undefined, phase: "error", error: "Wrapping reverted. No CCIP transfer was sent." });
+        throw new Error("Native conversion reverted. Check wallet activity before retrying.");
+      }
+      patchConversion({ hash: receipt.transactionHash, confirmed: true });
+      if (operation === "wrap") {
+        updateExecutionHistoryItem(item.id, { phase: "error", ccipTransferKey: undefined, error: undefined, currentStep: "Wrapping confirmed. Continue with the wrapped tokens already in your wallet." });
+        setSrcChainKey(conversion.chainKey);
+        setSrcTokenAddress(conversion.token);
+        setAmountInput(formatUnits(BigInt(conversion.amount), 18));
+      } else updateExecutionHistoryItem(item.id, { phase: "success", error: undefined, currentStep: "Native tokens unwrapped in your wallet." });
+    } catch (error) {
+      updateExecutionHistoryItem(item.id, { error: getErrorMessage(error) });
+    } finally { executionLockRef.current = false; setCheckingHistoryId(null); }
   }
 
   async function recheckCcipHistory(item: ExecutionHistoryItem) {
@@ -4460,8 +4520,8 @@ export function BridgeApp() {
     amountInput, destinationAddress, sourceWalletAddress, useApiRoutes, selectedCustomOftConfigId]);
   const currentCcipTransferKey = quoteRequestState.ready && sourceWalletAddress ? ccipTransferKey(quoteRequestState.payload, sourceWalletAddress) : undefined;
   const unresolvedSubmittedTransfer = executionHistory.find(item =>
-    (item.phase === "pending" || item.phase === "running") &&
-    ((item.ccipSubmission && item.ccipTransferKey === currentCcipTransferKey) || (item.solanaSubmission && item.executionKey === executionContext)));
+    ((item.ccipWrap?.hash && !item.ccipSubmission) || item.phase === "pending" || item.phase === "running") &&
+    (((item.ccipSubmission || item.ccipWrap?.hash) && item.ccipTransferKey === currentCcipTransferKey) || (item.solanaSubmission && item.executionKey === executionContext)));
   const executionContextRef = useRef(executionContext);
   useEffect(() => { executionContextRef.current = executionContext; }, [executionContext]);
   function assertCurrentExecutionContext() {
@@ -4486,6 +4546,8 @@ export function BridgeApp() {
       quoteId: quote.id,
       executionKey: executionContext,
       ccipTransferKey: quote.provider === "ccip" ? currentCcipTransferKey : undefined,
+      ccipUnwrap: quote.ccip?.wrapping?.destination ? { chainId: dstChain.chainId, chainKey: dstChain.chainKey,
+        token: quote.ccip.wrapping.destination, amount: quote.dstAmount, account: destinationAddress, confirmed: false } : undefined,
       phase: "running",
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -4552,6 +4614,11 @@ export function BridgeApp() {
                 chainId: srcChain.chainId, hash: hash as Hex,
                 onReplaced: ({ reason, transactionReceipt }) => {
                   if (kind === "bridge" && reason === "repriced") submitted(transactionReceipt.transactionHash, false);
+                  if (kind === "wrap" && reason === "repriced") {
+                    const wrap = executionHistoryRef.current.find(item => item.id === historyId)?.ccipWrap;
+                    if (wrap) updateExecutionHistoryItem(historyId, { ccipWrap: { ...wrap, hash: transactionReceipt.transactionHash } });
+                  }
+                  if (kind === "wrap" && reason === "cancelled") updateExecutionHistoryItem(historyId, { ccipWrap: undefined });
                   if (reason !== "repriced") {
                     if (kind === "bridge" && reason === "cancelled") applyCcipStatus(historyId, { status: "CANCELLED", error: "Source transaction was cancelled in the wallet." });
                     throw new Error("Transaction was cancelled or replaced. Check wallet activity before retrying.");
@@ -4559,9 +4626,14 @@ export function BridgeApp() {
                 },
               });
               if (kind === "bridge" && receipt.status !== "success") applyCcipStatus(historyId, { status: "FAILED", error: "Source transaction reverted. No CCIP transfer was sent." });
+              if (kind === "wrap" && receipt.status !== "success") updateExecutionHistoryItem(historyId, { ccipWrap: undefined });
               assertSuccessfulEvmReceipt(receipt);
               return receipt.transactionHash;
             },
+            wrapped: (hash, confirmed) => updateExecutionHistoryItem(historyId, { ccipWrap: {
+              chainId: srcChain.chainId, chainKey: srcChain.chainKey, token: quote.ccip!.wrapping!.source!,
+              amount: quote.srcAmount, account: address, hash, confirmed,
+            } }),
             submitted,
             step: currentStep => updateExecutionHistoryItem(historyId, { currentStep }),
           });
@@ -4575,7 +4647,7 @@ export function BridgeApp() {
           assertCcipQuote(built.quote, quoteRequestState.payload, srcChain);
           if (BigInt(built.quote.ccip!.nativeFee) > BigInt(quote.ccip!.maxNativeFee) || BigInt(built.quote.dstAmount) < BigInt(quote.dstAmount) ||
               built.quote.ccip!.router !== quote.ccip!.router || built.quote.ccip!.sourceSelector !== quote.ccip!.sourceSelector ||
-              built.quote.ccip!.destinationSelector !== quote.ccip!.destinationSelector) throw new Error("CCIP quote changed. Refresh before sending.");
+              built.quote.ccip!.destinationSelector !== quote.ccip!.destinationSelector || JSON.stringify(built.quote.ccip!.wrapping) !== JSON.stringify(quote.ccip!.wrapping)) throw new Error("CCIP quote changed. Refresh before sending.");
           // Aptos entry-function arguments are rebuilt from the reviewed transfer in the browser.
           const steps = sourceChainType === "APTOS" ? [ccipAptosStep(built.quote, srcChain.chainKey)] : built.userSteps;
           if (steps.length !== 1) throw new Error("CCIP requires one atomic source transaction.");
@@ -4930,6 +5002,12 @@ export function BridgeApp() {
         updateExecutionHistoryItem(historyId, { phase, error: message, currentStep: undefined });
         setExecutionState(current => ({ ...current, phase, error: message, transferStatus: ccipRecord.transferStatus }));
         pushExecutionNotification({ tone: phase === "pending" ? "neutral" : "danger", title: phase === "pending" ? "Confirmation pending" : "Execution stopped", message });
+        return;
+      }
+      if (ccipRecord?.ccipWrap?.hash) {
+        const message = ccipRecord.ccipWrap.confirmed ? "Wrapping completed. Continue with the wrapped tokens already in your wallet; do not wrap again." : "Wrapping was submitted. Check its status before continuing.";
+        updateExecutionHistoryItem(historyId, { phase: "pending", error: `${message} ${errorMessage}`, currentStep: undefined });
+        setExecutionState(current => ({ ...current, phase: "pending", error: message }));
         return;
       }
       const submittedHash = error && typeof error === "object" && "transactionHash" in error && typeof error.transactionHash === "string" ? error.transactionHash : undefined;
@@ -5564,6 +5642,9 @@ export function BridgeApp() {
                   </div>
                 ) : null}
 
+                {!isCustomOftSource && quote?.ccip?.wrapping ? (
+                  <p className="mt-3 text-xs text-[var(--muted)]">{quote.ccip.wrapping.source ? "Wrap the native amount, approve, then send with CCIP. Each step needs wallet confirmation. " : ""}{quote.ccip.wrapping.destination ? "Wrapped tokens arrive first. Select Unwrap in Transfers with the destination wallet to receive native tokens; destination gas is required." : "The destination receives the selected wrapped token."}{(quote.ccip.wrapping.source && srcChain?.chainId === 964) || (quote.ccip.wrapping.destination && dstChain?.chainId === 964) ? " TAO uses a root staking vault: at least 0.002 TAO to wrap, 0.01 TAO to unwrap, with exact minimum output enforced." : ""}</p>
+                ) : null}
                 {!isCustomOftSource && quote?.ccip?.native ? (
                   <p className="mt-3 text-xs text-[var(--muted)]">ETH is wrapped automatically and unwrapped on arrival at your source wallet’s same address. If that address cannot accept ETH, it receives WETH instead.</p>
                 ) : null}
@@ -5919,6 +6000,16 @@ export function BridgeApp() {
                             {checkingHistoryId === item.id ? "Checking…" : "Check status"}
                           </button>
                         ) : null}
+                        {item.ccipWrap?.hash && !item.ccipSubmission ? (
+                          <button type="button" disabled={checkingHistoryId !== null || item.phase === "running"} onClick={() => void handleNativeConversionHistory(item, "wrap")} className="rounded-full border border-white/15 px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40">
+                            {item.ccipWrap.confirmed ? "Use wrapped tokens" : "Check wrapping"}
+                          </button>
+                        ) : null}
+                        {item.ccipUnwrap && item.transferStatus === "COMPLETED" && !item.ccipUnwrap.confirmed ? (
+                          <button type="button" disabled={checkingHistoryId !== null} onClick={() => void handleNativeConversionHistory(item, "unwrap")} className="rounded-full border border-white/15 px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40">
+                            {item.ccipUnwrap.hash ? "Check unwrap" : "Unwrap"}
+                          </button>
+                        ) : null}
                         {item.explorerUrl ? <a className="text-white/70 hover:text-white" href={item.explorerUrl} target="_blank" rel="noreferrer">{item.ccipSubmission ? "CCIP Explorer" : "LayerZeroScan"} ↗</a> : null}
                       </div>
                       <details className="mt-2 text-xs">
@@ -5926,6 +6017,8 @@ export function BridgeApp() {
                         <dl className="mt-2 space-y-2 break-all text-white/70">
                           <div><dt className="text-white/40">Destination</dt><dd className="mt-1 font-mono">{item.destinationAddress}</dd></div>
                           {item.minimumDstAmount ? <div><dt className="text-white/40">Minimum receive</dt><dd>{item.minimumDstAmount}</dd></div> : null}
+                          {item.ccipWrap?.hash ? <div><dt className="text-white/40">Wrapping transaction</dt><dd className="mt-1 font-mono">{item.ccipWrap.hash}</dd></div> : null}
+                          {item.ccipUnwrap?.hash ? <div><dt className="text-white/40">Unwrapping transaction</dt><dd className="mt-1 font-mono">{item.ccipUnwrap.hash}</dd></div> : null}
                           {item.txHash ? <div><dt className="text-white/40">Transaction</dt><dd className="mt-1 font-mono">{item.txHash}</dd></div> : null}
                         </dl>
                         {item.error ? <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-5 text-amber-200/80">{formatExecutionCopy(item.error)}</p> : null}

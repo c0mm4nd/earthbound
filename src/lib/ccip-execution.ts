@@ -1,6 +1,7 @@
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, isAddress, parseAbi, zeroAddress, type Abi, type Address, type Hex } from "viem";
 import type { BridgeChain, BridgeQuote } from "./bridge-types";
 import { ccipAddressKey, isCcipAddress } from "./ccip-addresses";
+import { CCIP_WRAPPED_NATIVE, nativeConversionTransaction } from "./ccip-wrapped-native";
 import { CCIP_NATIVE_NETWORKS, CCIP_NATIVE_EXTRA_ARGS, isCcipNative } from "./ccip-native";
 import { ccipMessageEncoding } from "./ccip-message";
 import type { CcipQuoteRequest } from "./ccip";
@@ -24,7 +25,18 @@ const same = (a: string, b: string) => ccipAddressKey(a) === ccipAddressKey(b);
 
 export function assertCcipQuote(quote: BridgeQuote, request: CcipQuoteRequest, chain: BridgeChain) {
   const c = quote.ccip;
-  if (c && (c.native || isCcipNative(c.sourceToken) || isCcipNative(c.destinationToken))) {
+  if (c?.wrapping) {
+    const source = CCIP_WRAPPED_NATIVE[chain.chainId];
+    const destination = CCIP_WRAPPED_NATIVE[c.wrapping.destinationChainId];
+    if (c.native || (!c.wrapping.source && !c.wrapping.destination) ||
+        Boolean(c.wrapping.source) !== (chain.chainType === "EVM" && isCcipNative(c.sourceToken)) ||
+        Boolean(c.wrapping.destination) !== (c.destinationFamily === "EVM" && isCcipNative(c.destinationToken)) ||
+        (c.wrapping.source && (!source || !same(source.token, c.wrapping.source) || source.selector !== c.sourceSelector || !same(source.router, c.router))) ||
+        (c.wrapping.destination && (!destination || !same(destination.token, c.wrapping.destination) || destination.selector !== c.destinationSelector))) {
+      throw new Error("CCIP native wrapping does not match the reviewed asset.");
+    }
+  }
+  if (c && (c.native || (!c.wrapping && (isCcipNative(c.sourceToken) || isCcipNative(c.destinationToken))))) {
     const source = CCIP_NATIVE_NETWORKS[chain.chainId];
     const destination = Object.values(CCIP_NATIVE_NETWORKS).find(config => config.selector === c.destinationSelector);
     if (!c.native || chain.chainType !== "EVM" || c.destinationFamily !== "EVM" || !source || !destination ||
@@ -40,8 +52,8 @@ export function assertCcipQuote(quote: BridgeQuote, request: CcipQuoteRequest, c
       !same(c.sourceToken, request.srcTokenAddress) || !same(c.destinationToken, request.dstTokenAddress) || !same(c.receiver, request.dstWalletAddress) ||
       quote.routeSteps.length !== 1 || quote.routeSteps[0].type !== "CCIP" ||
       quote.routeSteps[0].srcChainKey !== request.srcChainKey || quote.routeSteps[0].dstChainKey !== request.dstChainKey ||
-      !isCcipAddress(chain.chainType, c.router) || !(c.native ? isCcipNative(c.sourceToken) : isCcipAddress(chain.chainType, c.sourceToken)) ||
-      !isCcipAddress(c.destinationFamily ?? "EVM", c.receiver) || !(c.native ? isCcipNative(c.destinationToken) : isCcipAddress(c.destinationFamily ?? "EVM", c.destinationToken)) ||
+      !isCcipAddress(chain.chainType, c.router) || !((c.native || c.wrapping?.source) ? isCcipNative(c.sourceToken) : isCcipAddress(chain.chainType, c.sourceToken)) ||
+      !isCcipAddress(c.destinationFamily ?? "EVM", c.receiver) || !((c.native || c.wrapping?.destination) ? isCcipNative(c.destinationToken) : isCcipAddress(c.destinationFamily ?? "EVM", c.destinationToken)) ||
       uint(c.sourceSelector, 64) === BigInt(0) || uint(c.destinationSelector, 64) === BigInt(0) || c.sourceSelector === c.destinationSelector ||
       uint(quote.srcAmount) === BigInt(0) || uint(quote.dstAmount) === BigInt(0) || uint(c.maxNativeFee) < uint(c.nativeFee) ||
       uint(c.maxNativeFee) > (uint(c.nativeFee) * BigInt(101) + BigInt(99)) / BigInt(100) || !Number.isFinite(c.quotedAt)) {
@@ -59,7 +71,7 @@ export function ccipMessage(quote: BridgeQuote) {
   return {
     ...ccipMessageEncoding(quote.ccip.sourceFamily ?? "EVM", quote.ccip.destinationFamily ?? "EVM", quote.ccip.receiver),
     data: "0x" as Hex,
-    tokenAmounts: [{ token: quote.ccip.sourceToken as Address, amount: BigInt(quote.srcAmount) }],
+    tokenAmounts: [{ token: (quote.ccip.wrapping?.source ?? quote.ccip.sourceToken) as Address, amount: BigInt(quote.srcAmount) }],
     feeToken: zeroAddress,
   };
 }
@@ -77,9 +89,10 @@ type Dependencies = {
   assertContext: () => void;
   refresh: () => Promise<BridgeQuote>;
   read: (args: { address: Address; abi: Abi; functionName: string; args: readonly unknown[]; account?: Address }) => Promise<bigint>;
-  send: (tx: CcipTransaction, kind: "approval" | "bridge") => Promise<string>;
-  wait: (hash: string, kind: "approval" | "bridge") => Promise<string>;
+  send: (tx: CcipTransaction, kind: "approval" | "bridge" | "wrap") => Promise<string>;
+  wait: (hash: string, kind: "approval" | "bridge" | "wrap") => Promise<string>;
   submitted: (hash: string, confirmed: boolean) => void;
+  wrapped?: (hash: string, confirmed: boolean) => void;
   step: (description: string) => void;
 };
 
@@ -97,7 +110,7 @@ export async function executeCcipTransfer(quote: BridgeQuote, request: CcipQuote
     deps.assertContext();
     assertCcipQuote(fresh, request, chain);
     const c = fresh.ccip!;
-    if (Boolean(c.native) !== Boolean(reviewed.native) || !same(c.router, reviewed.router) || c.sourceSelector !== reviewed.sourceSelector || c.destinationSelector !== reviewed.destinationSelector ||
+    if (JSON.stringify(c.wrapping) !== JSON.stringify(reviewed.wrapping) || Boolean(c.native) !== Boolean(reviewed.native) || !same(c.router, reviewed.router) || c.sourceSelector !== reviewed.sourceSelector || c.destinationSelector !== reviewed.destinationSelector ||
         BigInt(fresh.dstAmount) < BigInt(quote.dstAmount) || BigInt(c.nativeFee) > BigInt(reviewed.maxNativeFee) ||
         Date.now() - c.quotedAt > 120_000 || c.quotedAt > Date.now() + 5_000) {
       throw new Error("CCIP quote changed. Refresh and review the new quote before sending.");
@@ -106,7 +119,21 @@ export async function executeCcipTransfer(quote: BridgeQuote, request: CcipQuote
   };
   await refresh();
   const amount = BigInt(request.amount);
-  const allowanceArgs = { address: reviewed.sourceToken as Address, abi: erc20Abi, functionName: "allowance", args: [sender, reviewed.router] };
+  const sourceToken = (reviewed.wrapping?.source ?? reviewed.sourceToken) as Address;
+  if (reviewed.wrapping?.source) {
+    if (!deps.wrapped) throw new Error("Wrapping submission tracking is required.");
+    const balanceArgs = { address: sourceToken, abi: erc20Abi, functionName: "balanceOf", args: [sender] };
+    const before = await deps.read(balanceArgs);
+    deps.assertContext();
+    deps.step("Wrapping native tokens before CCIP transfer");
+    const hash = await deps.send(nativeConversionTransaction(chain.chainId, sourceToken, request.amount, "wrap"), "wrap");
+    deps.wrapped(hash, false);
+    const confirmed = await deps.wait(hash, "wrap");
+    deps.wrapped(confirmed, true);
+    deps.assertContext();
+    if (await deps.read(balanceArgs) - before !== amount) throw new Error("Wrapped balance did not increase by the reviewed amount. Check the wrapping transaction before continuing.");
+  }
+  const allowanceArgs = { address: sourceToken, abi: erc20Abi, functionName: "allowance", args: [sender, reviewed.router] };
   const allowance = reviewed.native ? amount : await deps.read(allowanceArgs);
   deps.assertContext();
   if (allowance < amount) {
@@ -114,7 +141,7 @@ export async function executeCcipTransfer(quote: BridgeQuote, request: CcipQuote
     for (const value of allowance > BigInt(0) ? [BigInt(0), amount] : [amount]) {
       deps.step(value === BigInt(0) ? "Resetting token allowance" : "Approving transfer amount");
       deps.assertContext();
-      const hash = await deps.send({ to: reviewed.sourceToken as Address, value: BigInt(0), data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [reviewed.router as Address, value] }) }, "approval");
+      const hash = await deps.send({ to: sourceToken, value: BigInt(0), data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [reviewed.router as Address, value] }) }, "approval");
       await deps.wait(hash, "approval");
       deps.assertContext();
     }

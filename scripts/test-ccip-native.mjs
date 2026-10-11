@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { decodeFunctionData, decodeAbiParameters, zeroAddress } from 'viem';
 import { createLoader } from './helpers/load-ts.mjs';
 const load = createLoader();
-const { CCIP_NATIVE_NETWORKS: networks, addCcipNativeTokens, isCcipNative } = load('ccip-native');
+const { CCIP_NATIVE_NETWORKS: networks, isCcipNative } = load('ccip-native');
+const { addWrappedNativeRoutes: addCcipNativeTokens } = load('ccip-wrapped-native');
 const { normalizeCcipQuote, resolveCcipQuote, mergeBridgeTokens } = load('ccip');
 const { assertCcipQuote, executeCcipTransfer, CCIP_ROUTER_ABI } = load('ccip-execution');
 const nativeAddress = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
@@ -20,10 +21,10 @@ assert.equal(addCcipNativeTokens({ chains: [unsupported], tokens: wrapped }).tok
 const base = [{ ...chains[0].nativeCurrency }];
 assert.equal(mergeBridgeTokens(base, catalog.tokens).find(token => token.chainKey === '1' && isCcipNative(token.address)).bridgeProviders.join(','), 'layerzero,ccip');
 const directional = addCcipNativeTokens({ chains, tokens: wrapped.map(token => ({ ...token, ccip: { destinations: token.chainKey === '1' ? [{ chainKey: '8453', address: networks[8453].wrappedToken }] : [] } })) });
-assert.equal(directional.tokens.find(token => token.chainKey === '1' && isCcipNative(token.address)).ccip.destinations.length, 1, 'preserve directed lanes');
+assert.equal(directional.tokens.find(token => token.chainKey === '1' && isCcipNative(token.address)).ccip.destinations.length, 2, 'preserve directed lanes');
 const request = { srcChainKey: '1', dstChainKey: '8453', srcTokenAddress: nativeAddress, dstTokenAddress: nativeAddress,
   srcWalletAddress: sender, dstWalletAddress: sender, amount: '1000000000000001' };
-for (const change of [{ srcWalletAddress: undefined }, { dstWalletAddress: other }, { dstTokenAddress: networks[8453].wrappedToken }]) {
+for (const change of [{ srcWalletAddress: undefined }, { dstWalletAddress: other }]) {
   assert.throws(() => resolveCcipQuote(catalog, { ...request, ...change }));
 }
 const quote = normalizeCcipQuote(catalog, request, { ccipFee: '1000' }).quotes[0];

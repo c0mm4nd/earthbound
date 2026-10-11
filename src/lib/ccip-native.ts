@@ -1,5 +1,5 @@
 import { encodeAbiParameters, zeroAddress, type Address, type Hex } from "viem";
-import type { CcipCatalog, CcipChain } from "./ccip";
+import type { CcipChain } from "./ccip";
 
 // Transporter's EtherSenderReceiver 1.5.0 deployments, checked 2026-10-12.
 // Verified source: https://etherscan.io/address/0x66598216d8e4d9afe0f06d525b335b762229842f#code
@@ -19,18 +19,4 @@ export function ccipNativeNetwork(chain: CcipChain) {
   const config = chain.chainType === "EVM" ? CCIP_NATIVE_NETWORKS[chain.chainId] : undefined;
   return config && config.selector === chain.ccip.selector && config.router === chain.ccip.router.toLowerCase() &&
     chain.nativeCurrency.symbol === "ETH" && chain.nativeCurrency.decimals === 18 ? config : undefined;
-}
-export function addCcipNativeTokens(catalog: CcipCatalog): CcipCatalog {
-  const entries = catalog.chains.flatMap(chain => {
-    const config = ccipNativeNetwork(chain);
-    const wrapped = config && catalog.tokens.find(token => token.chainKey === chain.chainKey && token.address.toLowerCase() === config.wrappedToken && token.decimals === 18);
-    return config && wrapped ? [{ chain, config, wrapped }] : [];
-  });
-  const nativeTokens = entries.flatMap(({ chain, wrapped }) => {
-    const destinations = entries.filter(dest => dest.chain.chainKey !== chain.chainKey && wrapped.ccip?.destinations.some(token =>
-      token.chainKey === dest.chain.chainKey && token.address.toLowerCase() === dest.config.wrappedToken));
-    return [{ ...chain.nativeCurrency, chainKey: chain.chainKey, isSupported: true, isBridgeable: true,
-      bridgeProviders: ["ccip" as const], ccip: { destinations: destinations.map(dest => ({ chainKey: dest.chain.chainKey, address: dest.chain.nativeCurrency.address })) } }];
-  });
-  return { ...catalog, tokens: [...catalog.tokens.filter(token => !nativeTokens.some(native => native.chainKey === token.chainKey && isCcipNative(token.address))), ...nativeTokens] };
 }

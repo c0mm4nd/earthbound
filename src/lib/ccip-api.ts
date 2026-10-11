@@ -1,6 +1,7 @@
 import { encodeAbiParameters, zeroAddress } from "viem";
-import { addCcipNativeTokens, CCIP_NATIVE_EXTRA_ARGS } from "./ccip-native";
-import { verifyCcipNativeDeployments } from "./ccip-native-rpc";
+import { CCIP_NATIVE_EXTRA_ARGS } from "./ccip-native";
+import { addWrappedNativeRoutes } from "./ccip-wrapped-native";
+import { verifyCcipNativeDeployments, verifyCcipWrappedNative, verifyCcipNativeSource } from "./ccip-native-rpc";
 import { viemChainById } from "./viem-chains-by-id";
 import type { BridgeChain, BridgeToken } from "./bridge-types";
 import { bridgeTokenKey, ccipFeeQuery, normalizeCcipQuote, resolveCcipQuote, type CcipCatalog, type CcipChain, type CcipQuoteRequest } from "./ccip";
@@ -132,7 +133,7 @@ export const getCcipCatalog = cached(async () => {
     catch { catalog.warnings = [...(catalog.warnings ?? []), "Transporter's additional assets are temporarily unavailable."]; }
   } else catalog.warnings = [...(catalog.warnings ?? []), "Transporter's additional assets are temporarily unavailable."];
   if (!catalog.tokens.length) throw new Error("CCIP token catalogs are temporarily unavailable.");
-  return addCcipNativeTokens(catalog);
+  return addWrappedNativeRoutes(catalog);
 });
 
 export class CcipRequestError extends Error {}
@@ -149,11 +150,11 @@ export async function getCcipQuote(body: unknown) {
   let query: URLSearchParams;
   try { query = ccipFeeQuery(catalog, request); }
   catch (error) { throw new CcipRequestError(error instanceof Error ? error.message : "Invalid CCIP quote request."); }
-  const { srcChain, dstChain, srcToken, native } = resolveCcipQuote(catalog, request);
+  const { srcChain, dstChain, srcToken, native, wrapping } = resolveCcipQuote(catalog, request);
   if (srcChain.chainType === "CANTON" || dstChain.chainType === "CANTON") {
     throw new CcipRequestError("Canton transfers are in development and are not available yet.");
   }
-  const latencyQuery = new URLSearchParams({ sourceChainSelectorName: srcChain.ccip.selectorName, destChainSelectorName: dstChain.ccip.selectorName, sourceTokenAddress: native?.source.wrappedToken ?? srcToken.address });
+  const latencyQuery = new URLSearchParams({ sourceChainSelectorName: srcChain.ccip.selectorName, destChainSelectorName: dstChain.ccip.selectorName, sourceTokenAddress: native?.source.wrappedToken ?? wrapping?.source ?? srcToken.address });
   const [fees, latency] = await Promise.all([
     native ? (async () => {
       const [fee] = await Promise.all([
@@ -170,6 +171,8 @@ export async function getCcipQuote(body: unknown) {
       ? fetchJson(`${TRANSPORTER}/transporterData/getTotalFeesEstimate?${query}`)
       : getNonEvmFees(srcChain, dstChain, request),
     fetchJson(`${TRANSPORTER}/ccipData/getLaneLatency?${latencyQuery}`).catch(() => null),
+    wrapping?.source ? verifyCcipNativeSource(srcChain.chainId, dstChain.ccip.selector!) : undefined,
+    wrapping ? verifyCcipWrappedNative([...(wrapping.source ? [srcChain.chainId] : []), ...(wrapping.destination ? [dstChain.chainId] : [])]) : undefined,
   ]);
   // A missing latency estimate must never prevent a valid fee quote.
   const estimate = latency && typeof latency === "object" && "totalMs" in latency && typeof latency.totalMs === "number" ? latency.totalMs : undefined;
