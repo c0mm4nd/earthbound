@@ -66,6 +66,7 @@ import {
 } from "@/lib/bridge-chain-utils";
 import { assertExecutionPlan, assertSuccessfulEvmReceipt } from "@/lib/execution-safety";
 import { buildCustomOftQuote } from "@/lib/custom-oft-quote";
+import { bridgeTokenKey, supportsCcipPair } from "@/lib/ccip";
 import { buildDirectOftQuote, supportsDirectOftRoute } from "@/lib/direct-oft";
 import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
 import { checkSolanaSubmission, fetchExternalWalletBalance } from "@/lib/bridge-wallets";
@@ -322,7 +323,7 @@ function getBridgeTokenId(token?: Pick<BridgeToken, "address" | "chainKey"> | nu
     return undefined;
   }
 
-  return `${token.chainKey.toLowerCase()}:${token.address.toLowerCase()}`;
+  return bridgeTokenKey(token);
 }
 
 function compareBridgeTokens(left: BridgeToken, right: BridgeToken) {
@@ -351,10 +352,7 @@ function isMatchingSelectedToken(
     return false;
   }
 
-  return (
-    token.chainKey === chainKey &&
-    token.address.toLowerCase() === tokenAddress.toLowerCase()
-  );
+  return bridgeTokenKey(token) === bridgeTokenKey({ chainKey, address: tokenAddress });
 }
 
 function buildTokenOptionSubtitle(name: string, chain?: Pick<BridgeChain, "shortName"> | null) {
@@ -1185,7 +1183,9 @@ function compareQuotes(left: BridgeQuote, right: BridgeQuote) {
   const rightAmount = BigInt(right.dstAmount);
 
   if (leftAmount === rightAmount) {
-    return getQuoteFeeUsdValue(left) - getQuoteFeeUsdValue(right);
+    const leftFee = getQuoteFeeUsdValue(left);
+    const rightFee = getQuoteFeeUsdValue(right);
+    return leftFee === rightFee ? 0 : leftFee - rightFee;
   }
 
   return rightAmount > leftAmount ? 1 : -1;
@@ -1198,6 +1198,7 @@ function getQuoteRouteKey(quote: BridgeQuote) {
 function formatRouteType(type: string) {
   const labels: Record<string, string> = {
     DIRECT_OFT: "Direct transfer",
+    CCIP: "CCIP",
     STARGATE_V2_TAXI: "Fast transfer",
     STARGATE_V2_BUS: "Economy transfer",
     STARGATE_V1: "Standard transfer",
@@ -1256,7 +1257,7 @@ function getQuoteFeeCopy(quote: BridgeQuote) {
     return directFee;
   }
 
-  return getFeeTotalUsd(quote.fees) ?? "Unknown";
+  return getFeeTotalUsd(quote.fees) ?? quote.fees?.map(fee => getSingleQuoteFeeCopy([fee]) ?? "Unknown").join(" + ") ?? "Unknown";
 }
 
 function getFeeTotalUsd(fees?: QuoteFee[]) {
@@ -1270,23 +1271,9 @@ function getFeeTotalUsd(fees?: QuoteFee[]) {
 }
 
 function getQuoteFeeUsdValue(quote: BridgeQuote) {
-  const directFee = Number(quote.feeUsd ?? "");
-
-  if (Number.isFinite(directFee) && directFee > 0) {
-    return directFee;
-  }
-
-  if (!quote.fees?.length) {
-    return Number.isFinite(directFee) ? directFee : 0;
-  }
-
-  const total = quote.fees.reduce((sum, fee) => sum + Number(fee.amountUsd ?? 0), 0);
-
-  if (Number.isFinite(total) && total > 0) {
-    return total;
-  }
-
-  return Number.isFinite(directFee) ? directFee : 0;
+  if (quote.feeUsd !== undefined && quote.feeUsd !== "" && Number.isFinite(Number(quote.feeUsd))) return Number(quote.feeUsd);
+  if (!quote.fees?.length || quote.fees.some(fee => fee.amountUsd === undefined || fee.amountUsd === "" || !Number.isFinite(Number(fee.amountUsd)))) return Infinity;
+  return quote.fees.reduce((sum, fee) => sum + Number(fee.amountUsd), 0);
 }
 
 function getSingleQuoteFeeCopy(fees?: QuoteFee[]) {
@@ -1300,7 +1287,7 @@ function getSingleQuoteFeeCopy(fees?: QuoteFee[]) {
     return null;
   }
 
-  const amountCopy = formatTokenAmount(fee.amount, fee.decimals, 4);
+  const amountCopy = formatTokenAmount(fee.amount, fee.decimals, 8);
   const usdCopy = formatFeeUsd(fee.amountUsd);
 
   return usdCopy ? `${amountCopy} ${fee.symbol} (${usdCopy})` : `${amountCopy} ${fee.symbol}`;
@@ -2439,6 +2426,7 @@ export function BridgeApp() {
   const [quotedRequestKey, setQuotedRequestKey] = useState("");
   const [selectedQuoteRouteKey, setSelectedQuoteRouteKey] = useState<string | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [quoteWarnings, setQuoteWarnings] = useState<string[]>([]);
   const [isQuoting, setIsQuoting] = useState(false);
   const [lastQuoteUpdatedAt, setLastQuoteUpdatedAt] = useState<number | null>(null);
   const [executionState, setExecutionState] = useState<ExecutionState>({
@@ -2508,13 +2496,13 @@ export function BridgeApp() {
 
   const chainsQuery = useQuery({
     queryKey: ["bridge", "chains"],
-    queryFn: () => fetchJson<{ chains: BridgeChain[] }>("/api/bridge/chains"),
+    queryFn: () => fetchJson<{ chains: BridgeChain[]; warnings?: string[] }>("/api/bridge/chains"),
     staleTime: 60 * 60 * 1000,
   });
 
   const tokensQuery = useQuery({
     queryKey: ["bridge", "tokens", "catalog"],
-    queryFn: () => fetchJson<{ tokens: BridgeToken[] }>("/api/bridge/tokens"),
+    queryFn: () => fetchJson<{ tokens: BridgeToken[]; warnings?: string[] }>("/api/bridge/tokens"),
     staleTime: 60 * 60 * 1000,
   });
 
@@ -2700,7 +2688,7 @@ export function BridgeApp() {
     queryKey: ["bridge", "tokens", "routes", srcChainKey, srcTokenAddress],
     enabled: Boolean(srcChainKey && srcTokenAddress),
     queryFn: () =>
-      fetchJson<{ tokens: BridgeToken[] }>(
+      fetchJson<{ tokens: BridgeToken[]; warnings?: string[] }>(
         `/api/bridge/tokens?transferrableFromChainKey=${encodeURIComponent(srcChainKey)}&transferrableFromTokenAddress=${encodeURIComponent(srcTokenAddress)}`,
       ),
     staleTime: 5 * 60 * 1000,
@@ -3201,7 +3189,7 @@ export function BridgeApp() {
   }, [quotes, selectedQuoteRouteKey, quotedRequestKey, quoteRequestKey]);
 
   const availableQuoteCount = quotes.length;
-  const bestQuoteRouteKey = quotes[0] ? getQuoteRouteKey(quotes[0]) : null;
+  const bestQuoteRouteKey = quotes[0] && quotes.every(candidate => Number.isFinite(getQuoteFeeUsdValue(candidate))) ? getQuoteRouteKey(quotes[0]) : null;
 
   const balanceEnabled = Boolean(
     sourceChainUsesEvmWallet &&
@@ -4122,6 +4110,7 @@ export function BridgeApp() {
     setSelectedQuoteRouteKey(null);
     setQuoteError(null);
     setLastQuoteUpdatedAt(null);
+    setQuoteWarnings([]);
     setExecutionState({ phase: "idle" });
   }, [srcChainKey]);
 
@@ -4192,6 +4181,7 @@ export function BridgeApp() {
     setLastQuoteUpdatedAt(null);
     setExecutionState({ phase: "idle" });
     quoteRequestIdRef.current += 1;
+    setQuoteWarnings([]);
     isQuotingRef.current = false;
     setIsQuoting(false);
   }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, srcChainKey, srcTokenAddress, bridgeApiProvider, sourceWalletAddress, activeExternalWalletSession?.walletId, evmConnector?.uid, useApiRoutes]);
@@ -4275,13 +4265,33 @@ export function BridgeApp() {
     setQuoteError(null);
 
     try {
-      const quoteResponse = !useApiRoutes
-        ? { quotes: [await requestDirectQuote()] } as BridgeQuoteResponse
-        : await fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
-        method: "POST",
-        headers: getBridgeApiRequestHeaders(bridgeApiProvider, layerZeroApiKey),
-        body: JSON.stringify(quoteRequestState.payload),
+      const requests: Array<{ label: string; result: Promise<BridgeQuoteResponse> }> = [];
+      const supportsExistingRoute = selectedSrcToken?.bridgeProviders?.includes("layerzero") && selectedDstToken?.bridgeProviders?.includes("layerzero");
+      if (supportsExistingRoute) requests.push({
+        label: "Other routes",
+        result: !useApiRoutes
+          ? requestDirectQuote().then(direct => ({ quotes: [direct] }))
+          : fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
+            method: "POST", headers: getBridgeApiRequestHeaders(bridgeApiProvider, layerZeroApiKey),
+            body: JSON.stringify(quoteRequestState.payload),
+          }),
       });
+      if (supportsCcipPair(selectedSrcToken, selectedDstToken)) requests.push({
+        label: "CCIP",
+        result: fetchJson<BridgeQuoteResponse>("/api/bridge/quotes", {
+          method: "POST", body: JSON.stringify({ ...quoteRequestState.payload, provider: "ccip" }),
+        }),
+      });
+      const results = await Promise.allSettled(requests.map(request => request.result));
+      const warnings: string[] = [];
+      const quoteResponse: BridgeQuoteResponse = { quotes: [], rejectedQuotes: [] };
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          quoteResponse.quotes.push(...result.value.quotes);
+          if (!result.value.quotes.length) warnings.push(`${requests[index].label}: ${result.value.rejectedQuotes?.[0]?.error ?? "No quote available."}`);
+        } else warnings.push(`${requests[index].label}: ${getErrorMessage(result.reason)}`);
+      });
+      quoteResponse.rejectedQuotes = warnings.map(error => ({ error }));
 
       if (!quoteResponse.quotes.length) {
         throw new Error(
@@ -4296,6 +4306,7 @@ export function BridgeApp() {
       }
 
       setQuotes(nextQuotes);
+      setQuoteWarnings(warnings);
       setQuotedRequestKey(quoteRequestKey);
       setSelectedQuoteRouteKey((current) => {
         if (current && nextQuotes.some((candidate) => getQuoteRouteKey(candidate) === current)) {
@@ -4311,6 +4322,7 @@ export function BridgeApp() {
       }
 
       setQuotes([]);
+      setQuoteWarnings([]);
       setQuoteError(getErrorMessage(error));
     } finally {
       if (requestId === quoteRequestIdRef.current) {
@@ -4395,6 +4407,7 @@ export function BridgeApp() {
   }
 
   async function handleExecuteQuote() {
+    if (quote?.execution === "quote-only" || quote?.provider === "ccip") return;
     if (!quote || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken || !quoteRequestState.ready || quotedRequestKey !== quoteRequestKey) {
       return;
     }
@@ -5106,6 +5119,7 @@ export function BridgeApp() {
       : null;
   const canExecuteQuote =
     Boolean(quote) &&
+    quote?.execution !== "quote-only" &&
     !unresolvedSolanaTransfer &&
     !isQuoting &&
     !quoteError &&
@@ -5383,6 +5397,13 @@ export function BridgeApp() {
                   </div>
                 ) : null}
 
+                {!isCustomOftSource && quote?.execution === "quote-only" ? (
+                  <p className="mt-3 text-xs text-[var(--muted)]">CCIP estimate only. Source network gas is additional. Continue on Transporter to review and send.</p>
+                ) : null}
+                {[...new Set([...(chainsQuery.data?.warnings ?? []), ...(tokensQuery.data?.warnings ?? []), ...(routeTokensQuery.data?.warnings ?? []), ...quoteWarnings])].map(warning => (
+                  <p key={warning} role="status" className="mt-2 text-xs text-amber-200/80">{warning}</p>
+                ))}
+
                 <div className="mt-3 grid gap-3 rounded-[1.15rem] border border-white/10 bg-white/[0.03] px-3 py-2.5">
                   <div className="min-w-0 flex-1">
                     <div className="grid gap-2.5 lg:grid-cols-[minmax(0,1.45fr)_minmax(12rem,0.8fr)]">
@@ -5424,7 +5445,7 @@ export function BridgeApp() {
 
                       <div className="rounded-[1.05rem] border border-white/10 bg-black px-3 py-2.5">
                         <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                          {isCustomOftSource ? "Receive" : "Min receive"}
+                          {isCustomOftSource ? "Receive" : quote?.execution === "quote-only" ? "Est. receive" : "Min receive"}
                         </p>
                         <p className="mt-1.5 text-xs text-white">
                           {isCustomOftSource ? (
@@ -5461,7 +5482,7 @@ export function BridgeApp() {
                       disabled={executionState.phase === "running"}
                       onCheckedChange={setUseApiRoutes}
                     >
-                      <span>Use API routes <span className="text-[var(--muted-strong)]">(provider fees may apply)</span></span>
+                      <span>Use API routes <span className="text-[var(--muted-strong)]">(CCIP always included)</span></span>
                     </ToggleSwitch>
                   ) : null}
                   <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
@@ -5487,7 +5508,9 @@ export function BridgeApp() {
                         <span>{isQuoting ? "Quoting" : "Quote"}</span>
                       </button>
                     )}
-                    <button
+                    {!isCustomOftSource && quote?.execution === "quote-only" ? (
+                      <a href="https://app.transporter.io/" target="_blank" rel="noopener noreferrer" className="inline-flex h-9 items-center rounded-full bg-white px-3 text-xs font-semibold text-black hover:bg-white/85">Open Transporter ↗</a>
+                    ) : <button
                       type="button"
                       onClick={() =>
                         isCustomOftSource ? void handleExecuteCustomOft() : void handleExecuteQuote()
@@ -5497,7 +5520,7 @@ export function BridgeApp() {
                     >
                       <SendIcon className="h-3.5 w-3.5" />
                       <span>{executionState.phase === "running" ? "Executing..." : "Execute"}</span>
-                    </button>
+                    </button>}
                   </div>
                   </div>
                 </div>
@@ -5549,6 +5572,7 @@ export function BridgeApp() {
                             <div className="min-w-0">
                               <p className="truncate text-sm font-medium">
                                 {formatQuoteRouteLabel(candidate)}
+                                {candidate.execution === "quote-only" ? <span className="ml-2 text-xs font-normal">Quote only</span> : null}
                               </p>
                               <p
                                 className={`mt-1 text-xs ${

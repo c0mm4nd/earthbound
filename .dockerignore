@@ -9,3 +9,6 @@ node_modules
 *.tsbuildinfo
 *.log
 .DS_Store
+AGENTS.md
+CLAUDE.md
+reports

@@ -2,7 +2,7 @@
 
 Earthbound is an independently operated cross-chain bridge with live quoting, route selection, wallet execution, and transfer tracking in one compact interface.
 
-This repository contains the Next.js application and its thin server-side proxy layer for Stargate and LayerZero APIs. It does not implement a custom bridging backend.
+This repository contains the Next.js application and its server-side adapters for Stargate, LayerZero, and Transporter / Chainlink CCIP APIs. It does not implement a custom bridging backend.
 
 ## Highlights
 
@@ -11,13 +11,22 @@ This repository contains the Next.js application and its thin server-side proxy 
 - User-managed custom OFT configs for direct LayerZero OFT transfers
 - Automatic live quotes with periodic refresh
 - Route comparison and selection in a single-page interface
+- CCIP token catalog and live Transporter fee estimates alongside existing routes
 - Execution tracking with transfer history and LayerZeroScan links
 - Chain-aware address validation and per-chain wallet execution flows
 - Support for EVM and multiple non-EVM wallet environments
 
 ## API Modes
 
-Earthbound currently supports four practical operating modes:
+Earthbound supports direct transfers, optional API routes, custom OFT configs, and CCIP quote comparison.
+
+### CCIP quotes
+
+The token and chain selectors merge the public [CCIP directory](https://docs.chain.link/ccip/directory/), which [Transporter references for supported assets](https://www.transporter.io/help/article/supported-blockchains-and-tokens), with the existing catalog. Deployments are deduplicated by chain and address; destination availability follows the directory's directed token routes, not symbol matching. Catalog requests are deduplicated and cached for five minutes. An unavailable CCIP catalog leaves existing routes available and shows a notice.
+
+For supported EVM → EVM pairs, Earthbound automatically requests Transporter's `getTotalFeesEstimate` and `getLaneLatency` APIs through the server, independently of the **Use API routes** toggle. Quotes require no API key or OFT discovery. Amounts use integer arithmetic, account for token transfer deductions and destination decimals, and show the native CCIP fee separately from source transaction gas. Missing USD valuations are not treated as zero fees.
+
+CCIP currently provides **quotes only**: the interface offers **Open Transporter** to review and send. These estimates cannot enter Earthbound's approval, signing, or transaction execution flow. Native-token wrapping and non-EVM CCIP quotes are not implemented; existing OFT routes retain their current support. Transporter endpoints are application APIs, so their schema or availability can change; failures are surfaced without discarding successful quotes from other providers. Run `node scripts/test-ccip.mjs` for catalog, direction, precision, cache and failure regressions.
 
 ### Default: direct OFT transfers
 
