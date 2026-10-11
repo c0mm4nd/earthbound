@@ -7,10 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:ccip": "node --test scripts/test-ccip.mjs scripts/test-ccip-execution.mjs scripts/test-ccip-solana.mjs scripts/test-ccip-aptos.mjs scripts/test-ccip-canton.mjs",
+    "test:ccip": "node --test scripts/test-ccip.mjs scripts/test-ccip-execution.mjs scripts/test-ccip-solana.mjs scripts/test-ccip-aptos.mjs scripts/test-ccip-canton.mjs scripts/test-ccip-native.mjs",
     "test:ccip:solana": "node scripts/test-ccip-solana.mjs",
     "test:ccip:aptos": "node scripts/test-ccip-aptos.mjs",
-    "test:ccip:canton": "node scripts/test-ccip-canton.mjs"
+    "test:ccip:canton": "node scripts/test-ccip-canton.mjs",
+    "test:ccip:native": "node scripts/test-ccip-native.mjs"
   },
   "dependencies": {
     "@canton-network/dapp-sdk": "1.7.1",

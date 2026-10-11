@@ -125,6 +125,7 @@ export interface BridgeQuote {
     sourceToken: string;
     destinationToken: string;
     receiver: string;
+    native?: { destinationWrapper: string; sourceWrappedToken: string; destinationWrappedToken: string };
     nativeFee: string;
     maxNativeFee: string;
     quotedAt: number;

@@ -3421,12 +3421,14 @@ export function BridgeApp() {
     args,
     chain,
     functionName,
+    account,
   }: {
     abi: Abi;
     address: Address;
     args?: readonly unknown[];
     chain: BridgeChain;
     functionName: string;
+    account?: Address;
   }) {
     if (chain.chainType !== "EVM") {
       throw new Error("Expected an EVM chain.");
@@ -3438,6 +3440,7 @@ export function BridgeApp() {
           address,
           abi,
           functionName,
+          account,
           args,
           chainId: chain.chainId as SupportedChainId,
         })) as T;
@@ -4352,7 +4355,7 @@ export function BridgeApp() {
 
       if (!quoteResponse.quotes.length) {
         throw new Error(
-          quoteResponse.rejectedQuotes?.[0]?.error ?? "No route available for this pair.",
+          quoteResponse.rejectedQuotes?.map(rejected => rejected.error).filter(Boolean).join(" ") || "No route available for this pair.",
         );
       }
 
@@ -5561,6 +5564,9 @@ export function BridgeApp() {
                   </div>
                 ) : null}
 
+                {!isCustomOftSource && quote?.ccip?.native ? (
+                  <p className="mt-3 text-xs text-[var(--muted)]">ETH is wrapped automatically and unwrapped on arrival at your source wallet’s same address. If that address cannot accept ETH, it receives WETH instead.</p>
+                ) : null}
                 {!isCustomOftSource && quote?.provider === "ccip" ? (
                   <p className="mt-3 text-xs text-[var(--muted)]">{sourceChainUsesEvmWallet ? "Send with CCIP from your wallet. The displayed fee includes a 1% ceiling; only the current fee is sent. Source network gas is additional." : "Send with CCIP from your wallet. The fee estimate includes a 1% buffer; the router charges the fee at execution. Source network gas is additional."}</p>
                 ) : null}

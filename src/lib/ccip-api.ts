@@ -1,3 +1,6 @@
+import { encodeAbiParameters, zeroAddress } from "viem";
+import { addCcipNativeTokens, CCIP_NATIVE_EXTRA_ARGS } from "./ccip-native";
+import { verifyCcipNativeDeployments } from "./ccip-native-rpc";
 import { viemChainById } from "./viem-chains-by-id";
 import type { BridgeChain, BridgeToken } from "./bridge-types";
 import { bridgeTokenKey, ccipFeeQuery, normalizeCcipQuote, resolveCcipQuote, type CcipCatalog, type CcipChain, type CcipQuoteRequest } from "./ccip";
@@ -129,7 +132,7 @@ export const getCcipCatalog = cached(async () => {
     catch { catalog.warnings = [...(catalog.warnings ?? []), "Transporter's additional assets are temporarily unavailable."]; }
   } else catalog.warnings = [...(catalog.warnings ?? []), "Transporter's additional assets are temporarily unavailable."];
   if (!catalog.tokens.length) throw new Error("CCIP token catalogs are temporarily unavailable.");
-  return catalog;
+  return addCcipNativeTokens(catalog);
 });
 
 export class CcipRequestError extends Error {}
@@ -141,17 +144,29 @@ export async function getCcipQuote(body: unknown) {
     throw new CcipRequestError("Select a CCIP token pair, amount and destination address.");
   }
   const request = Object.fromEntries(fields.map(key => [key, raw[key]])) as unknown as CcipQuoteRequest;
+  if (typeof raw.srcWalletAddress === "string" && raw.srcWalletAddress.length <= 256) request.srcWalletAddress = raw.srcWalletAddress;
   const catalog = await getCcipCatalog();
   let query: URLSearchParams;
   try { query = ccipFeeQuery(catalog, request); }
   catch (error) { throw new CcipRequestError(error instanceof Error ? error.message : "Invalid CCIP quote request."); }
-  const { srcChain, dstChain, srcToken } = resolveCcipQuote(catalog, request);
+  const { srcChain, dstChain, srcToken, native } = resolveCcipQuote(catalog, request);
   if (srcChain.chainType === "CANTON" || dstChain.chainType === "CANTON") {
     throw new CcipRequestError("Canton transfers are in development and are not available yet.");
   }
-  const latencyQuery = new URLSearchParams({ sourceChainSelectorName: srcChain.ccip.selectorName, destChainSelectorName: dstChain.ccip.selectorName, sourceTokenAddress: srcToken.address });
+  const latencyQuery = new URLSearchParams({ sourceChainSelectorName: srcChain.ccip.selectorName, destChainSelectorName: dstChain.ccip.selectorName, sourceTokenAddress: native?.source.wrappedToken ?? srcToken.address });
   const [fees, latency] = await Promise.all([
-    srcChain.chainType === "EVM"
+    native ? (async () => {
+      const [fee] = await Promise.all([
+        postJson(`${TRANSPORTER}/ccipData/getFeeData`, {
+          sourceChainSelectorName: srcChain.ccip.selectorName, destChainSelectorName: dstChain.ccip.selectorName,
+          routerAddress: native.source.wrapper, ccipMessage: {
+            receiver: encodeAbiParameters([{ type: "address" }], [native.destination.wrapper]), data: "0x",
+            tokenAmounts: [{ token: zeroAddress, amount: request.amount }], feeToken: zeroAddress, extraArgs: CCIP_NATIVE_EXTRA_ARGS,
+          },
+        }), verifyCcipNativeDeployments(srcChain.chainId, dstChain.chainId),
+      ]);
+      return { ccipFee: fee };
+    })() : srcChain.chainType === "EVM"
       ? fetchJson(`${TRANSPORTER}/transporterData/getTotalFeesEstimate?${query}`)
       : getNonEvmFees(srcChain, dstChain, request),
     fetchJson(`${TRANSPORTER}/ccipData/getLaneLatency?${latencyQuery}`).catch(() => null),

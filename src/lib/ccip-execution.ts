@@ -1,10 +1,12 @@
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, isAddress, parseAbi, zeroAddress, type Abi, type Address, type Hex } from "viem";
 import type { BridgeChain, BridgeQuote } from "./bridge-types";
 import { ccipAddressKey, isCcipAddress } from "./ccip-addresses";
+import { CCIP_NATIVE_NETWORKS, CCIP_NATIVE_EXTRA_ARGS, isCcipNative } from "./ccip-native";
 import { ccipMessageEncoding } from "./ccip-message";
 import type { CcipQuoteRequest } from "./ccip";
 
-// IRouterClient's EVM2AnyMessage. Pure token transfer, no receiver callback.
+// IRouterClient/EtherSenderReceiver EVM2AnyMessage. Token routes have no callback;
+// native ETH routes call the reviewed destination wrapper to unwrap.
 // https://docs.chain.link/ccip/evm/concepts/best-practices
 export const CCIP_ROUTER_ABI = parseAbi([
   "struct TokenAmount { address token; uint256 amount; }",
@@ -22,13 +24,24 @@ const same = (a: string, b: string) => ccipAddressKey(a) === ccipAddressKey(b);
 
 export function assertCcipQuote(quote: BridgeQuote, request: CcipQuoteRequest, chain: BridgeChain) {
   const c = quote.ccip;
+  if (c && (c.native || isCcipNative(c.sourceToken) || isCcipNative(c.destinationToken))) {
+    const source = CCIP_NATIVE_NETWORKS[chain.chainId];
+    const destination = Object.values(CCIP_NATIVE_NETWORKS).find(config => config.selector === c.destinationSelector);
+    if (!c.native || chain.chainType !== "EVM" || c.destinationFamily !== "EVM" || !source || !destination ||
+        source.selector !== c.sourceSelector || !same(c.router, source.wrapper) ||
+        !same(c.native.destinationWrapper, destination.wrapper) || !same(c.native.sourceWrappedToken, source.wrappedToken) ||
+        !same(c.native.destinationWrappedToken, destination.wrappedToken) || !isCcipNative(c.sourceToken) || !isCcipNative(c.destinationToken) ||
+        !isCcipAddress("EVM", request.srcWalletAddress ?? "") || !same(request.srcWalletAddress!, c.receiver)) {
+      throw new Error("Native CCIP quote does not match the supported wrapper and source wallet recipient.");
+    }
+  }
   if (quote.provider !== "ccip" || !c || (c.sourceFamily ?? "EVM") !== chain.chainType || c.sourceChainId !== chain.chainId ||
       request.srcChainKey !== chain.chainKey || quote.srcAmount !== request.amount ||
       !same(c.sourceToken, request.srcTokenAddress) || !same(c.destinationToken, request.dstTokenAddress) || !same(c.receiver, request.dstWalletAddress) ||
       quote.routeSteps.length !== 1 || quote.routeSteps[0].type !== "CCIP" ||
       quote.routeSteps[0].srcChainKey !== request.srcChainKey || quote.routeSteps[0].dstChainKey !== request.dstChainKey ||
-      !isCcipAddress(chain.chainType, c.router) || !isCcipAddress(chain.chainType, c.sourceToken) ||
-      !isCcipAddress(c.destinationFamily ?? "EVM", c.receiver) || !isCcipAddress(c.destinationFamily ?? "EVM", c.destinationToken) ||
+      !isCcipAddress(chain.chainType, c.router) || !(c.native ? isCcipNative(c.sourceToken) : isCcipAddress(chain.chainType, c.sourceToken)) ||
+      !isCcipAddress(c.destinationFamily ?? "EVM", c.receiver) || !(c.native ? isCcipNative(c.destinationToken) : isCcipAddress(c.destinationFamily ?? "EVM", c.destinationToken)) ||
       uint(c.sourceSelector, 64) === BigInt(0) || uint(c.destinationSelector, 64) === BigInt(0) || c.sourceSelector === c.destinationSelector ||
       uint(quote.srcAmount) === BigInt(0) || uint(quote.dstAmount) === BigInt(0) || uint(c.maxNativeFee) < uint(c.nativeFee) ||
       uint(c.maxNativeFee) > (uint(c.nativeFee) * BigInt(101) + BigInt(99)) / BigInt(100) || !Number.isFinite(c.quotedAt)) {
@@ -38,6 +51,11 @@ export function assertCcipQuote(quote: BridgeQuote, request: CcipQuoteRequest, c
 
 export function ccipMessage(quote: BridgeQuote) {
   if (!quote.ccip) throw new Error("Missing CCIP execution data.");
+  if (quote.ccip.native) return {
+    receiver: encodeAbiParameters([{ type: "address" }], [quote.ccip.native.destinationWrapper as Address]),
+    data: "0x" as Hex, tokenAmounts: [{ token: zeroAddress, amount: BigInt(quote.srcAmount) }],
+    feeToken: zeroAddress, extraArgs: CCIP_NATIVE_EXTRA_ARGS,
+  };
   return {
     ...ccipMessageEncoding(quote.ccip.sourceFamily ?? "EVM", quote.ccip.destinationFamily ?? "EVM", quote.ccip.receiver),
     data: "0x" as Hex,
@@ -58,26 +76,28 @@ export function ccipTransactionValue(chainId: number, fee: bigint) {
 type Dependencies = {
   assertContext: () => void;
   refresh: () => Promise<BridgeQuote>;
-  read: (args: { address: Address; abi: Abi; functionName: string; args: readonly unknown[] }) => Promise<bigint>;
+  read: (args: { address: Address; abi: Abi; functionName: string; args: readonly unknown[]; account?: Address }) => Promise<bigint>;
   send: (tx: CcipTransaction, kind: "approval" | "bridge") => Promise<string>;
   wait: (hash: string, kind: "approval" | "bridge") => Promise<string>;
   submitted: (hash: string, confirmed: boolean) => void;
   step: (description: string) => void;
 };
 
-// No upstream calldata is signed. Build only exact ERC20 approvals and ccipSend locally.
+// No upstream calldata is signed. Build exact ERC20 approvals or atomic native
+// wrapping, and ccipSend locally.
 export async function executeCcipTransfer(quote: BridgeQuote, request: CcipQuoteRequest, chain: BridgeChain, sender: string, deps: Dependencies) {
   assertCcipQuote(quote, request, chain);
   if (chain.chainType !== "EVM") throw new Error("Use the source family CCIP executor.");
   if (!isAddress(sender) || same(sender, zeroAddress)) throw new Error("Connect a valid source wallet.");
   const reviewed = quote.ccip!;
+  if (reviewed.native && !same(sender, reviewed.receiver)) throw new Error("Native CCIP can only send to the source wallet's same address on the destination network.");
   const refresh = async () => {
     deps.assertContext();
     const fresh = await deps.refresh();
     deps.assertContext();
     assertCcipQuote(fresh, request, chain);
     const c = fresh.ccip!;
-    if (!same(c.router, reviewed.router) || c.sourceSelector !== reviewed.sourceSelector || c.destinationSelector !== reviewed.destinationSelector ||
+    if (Boolean(c.native) !== Boolean(reviewed.native) || !same(c.router, reviewed.router) || c.sourceSelector !== reviewed.sourceSelector || c.destinationSelector !== reviewed.destinationSelector ||
         BigInt(fresh.dstAmount) < BigInt(quote.dstAmount) || BigInt(c.nativeFee) > BigInt(reviewed.maxNativeFee) ||
         Date.now() - c.quotedAt > 120_000 || c.quotedAt > Date.now() + 5_000) {
       throw new Error("CCIP quote changed. Refresh and review the new quote before sending.");
@@ -87,7 +107,7 @@ export async function executeCcipTransfer(quote: BridgeQuote, request: CcipQuote
   await refresh();
   const amount = BigInt(request.amount);
   const allowanceArgs = { address: reviewed.sourceToken as Address, abi: erc20Abi, functionName: "allowance", args: [sender, reviewed.router] };
-  const allowance = await deps.read(allowanceArgs);
+  const allowance = reviewed.native ? amount : await deps.read(allowanceArgs);
   deps.assertContext();
   if (allowance < amount) {
     // USDT and similar tokens require resetting a nonzero insufficient allowance.
@@ -101,15 +121,15 @@ export async function executeCcipTransfer(quote: BridgeQuote, request: CcipQuote
   }
   deps.step("Checking CCIP fee and transfer amount");
   const fresh = await refresh();
-  if (await deps.read(allowanceArgs) < amount) throw new Error("Token approval was not applied. Check the approval transaction.");
+  if (!reviewed.native && await deps.read(allowanceArgs) < amount) throw new Error("Token approval was not applied. Check the approval transaction.");
   // Final read verifies the exact message's current fee, including after slow approvals.
   const message = ccipMessage(fresh);
   const args = [BigInt(reviewed.destinationSelector), message] as const;
-  const fee = await deps.read({ address: reviewed.router as Address, abi: CCIP_ROUTER_ABI, functionName: "getFee", args });
+  const fee = await deps.read({ address: reviewed.router as Address, abi: CCIP_ROUTER_ABI, functionName: "getFee", args, account: sender as Address });
   if (fee < BigInt(0) || fee > BigInt(reviewed.maxNativeFee)) throw new Error("CCIP fee increased. Refresh and review the new quote before sending.");
   deps.assertContext();
   deps.step("Sending CCIP transfer");
-  const hash = await deps.send({ to: reviewed.router as Address, data: encodeFunctionData({ abi: CCIP_ROUTER_ABI, functionName: "ccipSend", args }), value: ccipTransactionValue(chain.chainId, fee) }, "bridge");
+  const hash = await deps.send({ to: reviewed.router as Address, data: encodeFunctionData({ abi: CCIP_ROUTER_ABI, functionName: "ccipSend", args }), value: ccipTransactionValue(chain.chainId, fee + (reviewed.native ? amount : BigInt(0))) }, "bridge");
   deps.submitted(hash, false);
   const confirmedHash = await deps.wait(hash, "bridge");
   deps.submitted(confirmedHash, true);

@@ -1,5 +1,6 @@
 import { ccipAddressKey, isCcipAddress } from "./ccip-addresses";
-import { formatUnits } from "viem";
+import { formatUnits, zeroAddress } from "viem";
+import { ccipNativeNetwork, isCcipNative } from "./ccip-native";
 import type { BridgeChain, BridgeQuoteResponse, BridgeToken, QuoteFee } from "./bridge-types";
 
 export interface CcipChain extends BridgeChain {
@@ -80,20 +81,32 @@ export function resolveCcipQuote(catalog: CcipCatalog, request: CcipQuoteRequest
   if (!isCcipAddress(dstChain.chainType, request.dstWalletAddress)) {
     throw new Error("Enter a valid CCIP destination address.");
   }
+  let native;
+  if (srcChain.chainType === "EVM" && (isCcipNative(srcToken.address) || (dstChain.chainType === "EVM" && isCcipNative(dstToken.address)))) {
+    const source = ccipNativeNetwork(srcChain), destination = ccipNativeNetwork(dstChain);
+    if (!source || !destination || !isCcipNative(srcToken.address) || !isCcipNative(dstToken.address) || srcToken.decimals !== 18 || dstToken.decimals !== 18) {
+      throw new Error("This native CCIP route is not supported.");
+    }
+    if (!isCcipAddress("EVM", request.srcWalletAddress ?? "")) throw new Error("Connect the source wallet to quote a native CCIP transfer.");
+    if (ccipAddressKey(request.srcWalletAddress!) !== ccipAddressKey(request.dstWalletAddress)) {
+      throw new Error("Native CCIP transfers arrive at the source wallet's same address on the destination network.");
+    }
+    native = { source, destination };
+  }
   const amount = unsignedAmount(request.amount, "CCIP amount");
   if (amount === BigInt(0)) throw new Error("CCIP amount must be greater than zero.");
   if (["SOLANA", "APTOS"].includes(srcChain.chainType) && amount >= BigInt(2) ** BigInt(64)) throw new Error("CCIP amount exceeds the source chain limit.");
-  return { srcChain, dstChain, srcToken, dstToken, amount };
+  return { srcChain, dstChain, srcToken, dstToken, amount, native };
 }
 
 export function ccipFeeQuery(catalog: CcipCatalog, request: CcipQuoteRequest) {
-  const { srcChain, dstChain, srcToken, amount } = resolveCcipQuote(catalog, request);
+  const { srcChain, dstChain, srcToken, amount, native } = resolveCcipQuote(catalog, request);
   return new URLSearchParams({
     sourceChainSelectorName: srcChain.ccip.selectorName,
     destChainSelectorName: dstChain.ccip.selectorName,
-    routerAddress: srcChain.ccip.router,
-    receiver: request.dstWalletAddress,
-    token: srcToken.address,
+    routerAddress: native?.source.wrapper ?? srcChain.ccip.router,
+    receiver: native?.destination.wrapper ?? request.dstWalletAddress,
+    token: native ? zeroAddress : srcToken.address,
     // Transporter expects a decimal token amount, not base units.
     amount: formatUnits(amount, srcToken.decimals),
     tokenDecimals: String(srcToken.decimals),
@@ -107,7 +120,7 @@ export function normalizeCcipQuote(
   data: unknown,
   estimatedMilliseconds?: number,
 ): BridgeQuoteResponse {
-  const { srcChain, dstChain, srcToken, dstToken, amount } = resolveCcipQuote(catalog, request);
+  const { srcChain, dstChain, srcToken, dstToken, amount, native: nativeRoute } = resolveCcipQuote(catalog, request);
   if (!data || typeof data !== "object" || !("ccipFee" in data)) throw new Error("CCIP returned an invalid fee estimate.");
   const nativeFee = unsignedAmount(data.ccipFee, "CCIP fee");
   // Review a 1% fee ceiling, but send only the current router fee.
@@ -139,7 +152,9 @@ export function normalizeCcipQuote(
     id: `ccip:${srcChain.ccip.selector}:${dstChain.ccip.selector}:${Date.now()}`,
     provider: "ccip",
     ccip: {
-      router: srcChain.ccip.router, sourceSelector: srcChain.ccip.selector!, destinationSelector: dstChain.ccip.selector!,
+      router: nativeRoute?.source.wrapper ?? srcChain.ccip.router,
+      native: nativeRoute ? { destinationWrapper: nativeRoute.destination.wrapper, sourceWrappedToken: nativeRoute.source.wrappedToken, destinationWrappedToken: nativeRoute.destination.wrappedToken } : undefined,
+      sourceSelector: srcChain.ccip.selector!, destinationSelector: dstChain.ccip.selector!,
       sourceChainId: srcChain.chainId, sourceFamily: srcChain.chainType, destinationFamily: dstChain.chainType, sourceToken: srcToken.address, destinationToken: dstToken.address,
       receiver: request.dstWalletAddress, nativeFee: nativeFee.toString(), maxNativeFee: maxNativeFee.toString(), quotedAt: Date.now(),
     },
