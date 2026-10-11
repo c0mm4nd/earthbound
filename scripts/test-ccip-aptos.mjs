@@ -61,3 +61,26 @@ provider.signAndSubmitTransaction = async () => { signCount++; throw Error('user
 await assert.rejects(() => executeAptosUserSteps([step], '0x1'), /user rejected/);
 assert.equal(signCount, 2, 'wallet rejection is not retried');
 console.log('CCIP Aptos wallet unit: mainnet, account/form changes, pre-sign guard, submitted hash persistence and rejection passed.');
+
+// Family adapter fixture: a wrapped asset can arrive at an EVM native exit.
+// This does not create or advertise a native APT lane in the live catalog.
+const { CCIP_WRAPPED_NATIVE, addWrappedNativeRoutes } = load('ccip-wrapped-native');
+const { normalizeCcipQuote } = load('ccip');
+const { assertCcipQuote } = load('ccip-execution');
+const cfg = CCIP_WRAPPED_NATIVE[1];
+const aptos = { chainKey: 'aptos', chainId: 1, chainType: 'APTOS', nativeCurrency: { symbol: 'APT', decimals: 8, address: '0xa' }, ccip: { selector: '4741433654826277614', selectorName: 'aptos', router: '0xabc' } };
+const eth = { chainKey: 'eth', chainId: 1, chainType: 'EVM', nativeCurrency: { symbol: 'ETH', decimals: 18, address: '0x' + '0'.repeat(40) }, ccip: { selector: cfg.selector, selectorName: 'ethereum', router: cfg.router } };
+const fixture = addWrappedNativeRoutes({ chains: [aptos, eth], tokens: [
+  { chainKey: 'aptos', address: '0xdef', decimals: 8, ccip: { destinations: [{ chainKey: 'eth', address: cfg.token }] } },
+  { chainKey: 'eth', address: cfg.token, decimals: 18, ccip: { destinations: [] } },
+] });
+const nativeRequest = { srcChainKey: 'aptos', dstChainKey: 'eth', srcTokenAddress: '0xdef', dstTokenAddress: eth.nativeCurrency.address, srcWalletAddress: '0x1', dstWalletAddress: evm, amount: '12345678' };
+const nativeQuote = normalizeCcipQuote(fixture, nativeRequest, { ccipFee: '1000' }).quotes[0];
+assertCcipQuote(nativeQuote, nativeRequest, aptos);
+assert.equal(nativeQuote.dstAmount, '123456780000000000');
+assert.equal(nativeQuote.ccip.wrapping.destination, cfg.token);
+assert.equal(ccipAptosPayload(nativeQuote).arguments[3][0], '0xdef');
+assert.equal(ccipAptosPayload(nativeQuote).arguments[4][0], '12345678');
+assert.equal(ccipAptosPayload(nativeQuote).arguments[6], '0xa');
+assert.equal(fixture.tokens.filter(t => t.chainKey === 'aptos').length, 1);
+console.log('CCIP Aptos native-exit fixture: 8/18 decimal accounting, actual source asset, unchanged APT fee and no invented native APT lane passed.');

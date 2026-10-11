@@ -102,3 +102,30 @@ provider.signTransaction = async tx => {
 };
 await assert.rejects(() => executeSolanaUserSteps([fixture.step], payer), /changed the reviewed CCIP transaction/);
 console.log('CCIP Solana signed-message mutation is rejected before broadcast.');
+
+// Native 0G shares its existing W0G lane with Solana. SOL itself is not a
+// cross-chain principal merely because it pays the source network fee.
+const { CCIP_WRAPPED_NATIVE, addWrappedNativeRoutes } = load('ccip-wrapped-native');
+const { assertCcipQuote, ccipMessage } = load('ccip-execution');
+const { zeroAddress } = await import('viem');
+const ogConfig = CCIP_WRAPPED_NATIVE[16661];
+const ogChain = { chainId: 16661, chainKey: 'og', chainType: 'EVM', nativeCurrency: { address: zeroAddress, decimals: 18, symbol: '0G' }, ccip: { selector: ogConfig.selector, selectorName: 'og', router: ogConfig.router } };
+const solChain = catalog.chains[0];
+const nativeCatalog = addWrappedNativeRoutes({ chains: [ogChain, solChain], tokens: [
+  { chainKey: 'og', address: ogConfig.token, decimals: 18, symbol: 'W0G', ccip: { destinations: [{ chainKey: 'solana', address: mint }] } },
+  { chainKey: 'solana', address: mint, decimals: 9, symbol: 'W0G', ccip: { destinations: [{ chainKey: 'og', address: ogConfig.token }] } },
+] });
+const nativeToSol = { srcChainKey: 'og', dstChainKey: 'solana', srcTokenAddress: zeroAddress, dstTokenAddress: mint, srcWalletAddress: evm, dstWalletAddress: recipient, amount: '1000000000000000000' };
+const outboundNative = normalizeCcipQuote(nativeCatalog, nativeToSol, { ccipFee: '1000' }).quotes[0];
+assertCcipQuote(outboundNative, nativeToSol, ogChain);
+assert.equal(outboundNative.dstAmount, '1000000000');
+assert.equal(ccipMessage(outboundNative).tokenAmounts[0].token, ogConfig.token);
+assert.equal(ccipMessage(outboundNative).extraArgs, ccipMessageEncoding('EVM', 'SOLANA', recipient).extraArgs);
+const solToNative = { srcChainKey: 'solana', dstChainKey: 'og', srcTokenAddress: mint, dstTokenAddress: zeroAddress, srcWalletAddress: recipient, dstWalletAddress: evm, amount: '123456789' };
+const inboundNative = normalizeCcipQuote(nativeCatalog, solToNative, { ccipFee: '1000' }).quotes[0];
+assertCcipQuote(inboundNative, solToNative, solChain);
+assert.equal(inboundNative.dstAmount, '123456789000000000');
+assert.equal(inboundNative.ccip.wrapping.source, undefined);
+assert.equal(inboundNative.ccip.wrapping.destination, ogConfig.token);
+assert.equal(nativeCatalog.tokens.filter(t => t.chainKey === 'solana').length, 1, 'do not invent native SOL support');
+console.log('CCIP Solana native-asset unit: real W0G lane semantics, 18/9 decimal conversion, source wrapped mint, unchanged recipient encoding and destination manual unwrap passed.');

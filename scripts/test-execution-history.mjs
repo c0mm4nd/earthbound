@@ -42,3 +42,16 @@ for (const [family, hash] of [['SOLANA', '2'.repeat(88)], ['APTOS', '0x' + '2'.r
 }
 assert.equal(parseExecutionHistory(JSON.stringify([{ ...ccipItem, ccipSubmission: { chainId: 1, family: 'SOLANA', hash: '0x' + 'a'.repeat(64), confirmed: false } }])).length, 0, 'EVM hash cannot be recovered as a Solana signature');
 console.log('Independent source-family hash recovery passed.');
+
+const nativeConversion = { chainId: 177, chainKey: 'hsk', token: '0x' + 'a'.repeat(40), amount: '1000000000000000000', account: '0x' + 'b'.repeat(40), hash: '0x' + 'c'.repeat(64), confirmed: false };
+const wrappingItem = { ...item, solanaSubmission: undefined, phase: 'running', ccipWrap: nativeConversion };
+assert.equal(parseExecutionHistory(JSON.stringify([wrappingItem])).length, 1);
+assert.equal(recoverExecutionHistory([wrappingItem])[0].phase, 'pending');
+assert.equal(recoverExecutionHistory([wrappingItem])[0].ccipWrap.hash, nativeConversion.hash);
+assert.equal(recoverExecutionHistory([wrappingItem])[0].transferStatus, 'CONFIRMATION_PENDING');
+const unwrappingItem = { ...ccipItem, phase: 'success', transferStatus: 'COMPLETED', ccipUnwrap: { ...nativeConversion, hash: undefined } };
+assert.equal(parseExecutionHistory(JSON.stringify([unwrappingItem])).length, 1, 'settled CCIP can retain a separate destination unwrap');
+for (const invalid of [{ amount: '0' }, { amount: (2n ** 256n).toString() }, { hash: 'broken' }, { chainId: 1.1 }, { account: 'invalid' }, { token: 'invalid' }, { confirmed: 'yes' }]) {
+  assert.equal(parseExecutionHistory(JSON.stringify([{ ...wrappingItem, ccipWrap: { ...nativeConversion, ...invalid } }])).length, 0);
+}
+console.log('Native conversion history: pending wrap recovery, destination unwrap retention and malformed data rejection passed.');
