@@ -1,0 +1,86 @@
+{
+  "address": "CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC",
+  "metadata": {
+    "name": "message_transmitter_v2",
+    "version": "0.2.0",
+    "spec": "0.1.0",
+    "description": "Message Transmitter for Cross-Chain Transfer Protocol V2",
+    "repository": "https://github.com/circlefin/solana-cctp-contracts"
+  },
+  "instructions": [
+    {
+      "name": "receive_message",
+      "discriminator": [
+        38,
+        144,
+        127,
+        225,
+        31,
+        225,
+        238,
+        25
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "caller",
+          "signer": true
+        },
+        {
+          "name": "authority_pda"
+        },
+        {
+          "name": "message_transmitter"
+        },
+        {
+          "name": "used_nonce",
+          "writable": true
+        },
+        {
+          "name": "receiver"
+        },
+        {
+          "name": "system_program"
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "ReceiveMessageParams"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "ReceiveMessageParams",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "message",
+            "type": "bytes"
+          },
+          {
+            "name": "attestation",
+            "type": "bytes"
+          }
+        ]
+      }
+    }
+  ]
+}

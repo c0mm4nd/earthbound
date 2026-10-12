@@ -1,0 +1,8 @@
+{
+  "source": "https://github.com/circlefin/aptos-cctp/tree/440599d2aa7673cd26574377d77ccd5071d6c3be/typescript/example/precompiled-move-scripts/mainnet/v2",
+  "sha256": {
+    "deposit_for_burn": "8447c14c4f7d1edcc0bed97f46bb8db2cc67663cf8a948b2b4f25a0c7eb5744c",
+    "deposit_for_burn_with_hook": "a06ef2513f2406f72c396e76ac7825791a9b229567b14ae56be8e04ccbc697c3",
+    "receive_message": "8b3dc2a420857b428be2e13ac098a5ca4d273f97b5d8837977a2c04c3aaebe67"
+  }
+}

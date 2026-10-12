@@ -1,0 +1,19 @@
+{
+  "source": "https://solana-rpc.publicnode.com",
+  "checkedAt": "2026-10-12T11:52:10.172Z",
+  "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "accounts": {
+    "messenger": {
+      "address": "AawthJCGRmggpfv9MMWV6Jmo9cue4gL9wUZgRBShg58W",
+      "owner": "CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe",
+      "slot": 456036832,
+      "data": "ogTyNJPz3WBifH9cKmgj3LhlsN9mQ9mCoy45o6dSGSHuq6ktuK4MrjCaHk2Zip7kdag8/rWTGbtlxhL1z2XbHS9CPlt0wDA0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAA/i88oYrtNa+SHbDNsU+0I37Z8fQI1MZububH98/44nGxQprYC35oGOdHrubj9StxPm4OFAuIB8XquhxgyksBi+0AAAAA"
+    },
+    "transmitter": {
+      "address": "W1k5ijkaSTo5iA5zChNpfzcy796fLhkBxfmJuR8W8HU",
+      "owner": "CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC",
+      "slot": 456036834,
+      "data": "Ryi0jhPLI/xkuKShhLLHdSBpNHaCst7zt9PsGg3e7a/xESPvMkkzpAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAASLEPT7ahzgda4bfrm31AbK93RWB5o31j/uHlnZn0x7RGIZNuc+f9SadnXu16aJZUp0DDcgifqMk6d5CyeNUjxAAFAAAAAQAAAAIAAAACAAAAAAAAAAAAAAAAAAAAclsG9z/3Ye9TkOOTFeK/v2DTP5YAAAAAAAAAAAAAAABS7Uy/+NzmoZdIBD8yQOwDyDS87wAgAAAAAAAA"
+    }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "source": "Starknet mainnet starknet_getClassAt 2026-10-12",
+  "address": "0x07d421B9cA8aA32DF259965cDA8ACb93F7599F69209A41872AE84638B2A20F2a",
+  "abi": [
+    {
+      "type": "interface",
+      "name": "interfaces::token_messager_minter_v2::ITokenMessengerMinterV2",
+      "items": [
+        {
+          "type": "function",
+          "name": "deposit_for_burn",
+          "inputs": [
+            {
+              "name": "amount",
+              "type": "core::integer::u256"
+            },
+            {
+              "name": "destination_domain",
+              "type": "core::integer::u32"
+            },
+            {
+              "name": "mint_recipient",
+              "type": "core::integer::u256"
+            },
+            {
+              "name": "burn_token",
+              "type": "core::starknet::contract_address::ContractAddress"
+            },
+            {
+              "name": "destination_caller",
+              "type": "core::integer::u256"
+            },
+            {
+              "name": "max_fee",
+              "type": "core::integer::u256"
+            },
+            {
+              "name": "min_finality_threshold",
+              "type": "core::integer::u32"
+            }
+          ],
+          "outputs": [],
+          "state_mutability": "external"
+        },
+        {
+          "type": "function",
+          "name": "deposit_for_burn_with_hook",
+          "inputs": [
+            {
+              "name": "amount",
+              "type": "core::integer::u256"
+            },
+            {
+              "name": "destination_domain",
+              "type": "core::integer::u32"
+            },
+            {
+              "name": "mint_recipient",
+              "type": "core::integer::u256"
+            },
+            {
+              "name": "burn_token",
+              "type": "core::starknet::contract_address::ContractAddress"
+            },
+            {
+              "name": "destination_caller",
+              "type": "core::integer::u256"
+            },
+            {
+              "name": "max_fee",
+              "type": "core::integer::u256"
+            },
+            {
+              "name": "min_finality_threshold",
+              "type": "core::integer::u32"
+            },
+            {
+              "name": "hook_data",
+              "type": "core::byte_array::ByteArray"
+            }
+          ],
+          "outputs": [],
+          "state_mutability": "external"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "source": "sui-rpc.publicnode.com sui_getObject 2026-10-12",
+  "result": {
+    "data": {
+      "objectId": "0x0c067f7d325e5b60e3179712e7783534ba1556cbb3d359d8161497e37689230c",
+      "version": "1044538122",
+      "digest": "HraWVh4vBNYA6zTv3sY7pGRwg42nKDSx9duBCwL96Qpb",
+      "content": {
+        "dataType": "moveObject",
+        "type": "0x16bcfcfc465f96281663a344641c017de84529370e11aa3879d0dce43ad6db87::state::State",
+        "hasPublicTransfer": false,
+        "fields": {
+          "local_domain": 8,
+          "message_version": 1,
+          "paused": false,
+          "signature_threshold": "2",
+          "enabled_attesters": {
+            "type": "0x2::vec_set::VecSet<address>",
+            "fields": {
+              "contents": [
+                "0x000000000000000000000000725b06f73ff761ef5390e39315e2bfbf60d33f96",
+                "0x00000000000000000000000052ed4cbff8dce6a19748043f3240ec03c834bcef"
+              ]
+            }
+          },
+          "used_nonces": {
+            "type": "0x2::table::Table<u256, bool>",
+            "fields": {
+              "id": {
+                "id": "0xbba37efd54bae90f23dd707f8189970c7c80d9fc36aa15d2d48afa61a14fc338"
+              },
+              "size": "234"
+            }
+          }
+        }
+      }
+    }
+  }
+}
