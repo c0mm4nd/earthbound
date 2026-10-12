@@ -10,6 +10,7 @@ import type { BridgeApiProvider } from "@/lib/bridge-types";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    if (body?.provider === "cctp" || (typeof body?.quoteId === "string" && body.quoteId.startsWith("cctp-"))) return NextResponse.json({ error: "CCTP uses locally verified burn and claim transactions." }, { status: 400 });
     if (body?.provider === "ccip" || (typeof body?.quoteId === "string" && body.quoteId.startsWith("ccip:"))) {
       return NextResponse.json({ error: "CCIP transactions are built locally from a refreshed quote and the connected wallet's allowance." }, { status: 400 });
     }

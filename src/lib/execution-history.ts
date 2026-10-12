@@ -1,5 +1,6 @@
 import { isCcipTransactionHash } from "./ccip-addresses";
 import type { SolanaSubmission } from "./solana-confirmation";
+import { assertCctpTransfer, type CctpTransfer } from "./cctp-evm";
 
 export type CcipNativeConversion = { chainId: number; chainKey: string; token: string; amount: string; account: string; hash?: string; confirmed: boolean };
 
@@ -8,6 +9,7 @@ export type ExecutionHistoryItem = {
   quoteId: string;
   executionKey?: string;
   ccipTransferKey?: string;
+  cctp?: CctpTransfer;
   solanaSubmission?: SolanaSubmission;
   ccipWrap?: CcipNativeConversion;
   ccipUnwrap?: CcipNativeConversion;
@@ -47,6 +49,7 @@ export function parseExecutionHistory(serialized: string | null): ExecutionHisto
       const strings = ["id", "quoteId", "routeLabel", "srcChainName", "dstChainName", "srcTokenSymbol", "dstTokenSymbol", "srcAmount", "expectedDstAmount", "destinationAddress"];
       if (!strings.every((key) => typeof item[key] === "string") || !Number.isFinite(item.createdAt) || !Number.isFinite(item.updatedAt)) return false;
       if (!["running", "pending", "success", "error"].includes(item.phase)) return false;
+      if (item.cctp) { try { assertCctpTransfer(item.cctp); } catch { return false; } }
       if (item.solanaSubmission && typeof item.solanaSubmission.signature !== "string") return false;
       if (item.ccipSubmission && (!Number.isSafeInteger(item.ccipSubmission.chainId) || !isCcipTransactionHash(item.ccipSubmission.family ?? "EVM", item.ccipSubmission.hash) || typeof item.ccipSubmission.confirmed !== "boolean")) return false;
       for (const conversion of [item.ccipWrap, item.ccipUnwrap]) {
@@ -66,7 +69,8 @@ export function mergeExecutionHistory(...groups: ExecutionHistoryItem[][]): Exec
     const existing = byId.get(item.id);
     if (!existing || item.updatedAt >= existing.updatedAt) byId.set(item.id, item);
   }
-  return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)).slice(0, HISTORY_LIMIT);
+  return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+    .filter((item, index) => index < HISTORY_LIMIT || (item.cctp && !["complete", "failed", "preparing"].includes(item.cctp.state)));
 }
 
 // Remove the tab-only copy only after its durable replacement has been written.
@@ -83,6 +87,10 @@ export function loadExecutionHistory(storage: Storage, legacyStorage: Storage): 
 }
 
 export function recoverExecutionHistory(items: ExecutionHistoryItem[]): ExecutionHistoryItem[] {
+  items = items.map(item => item.cctp && item.phase === "running" ? {
+    ...item, phase: item.cctp.state === "preparing" ? "error" : "pending",
+    currentStep: "CCTP transfer restored. Check its status before sending again.",
+  } : item);
   return items.map((item) => item.phase === "running" ? {
     ...item,
     phase: item.solanaSubmission || item.ccipSubmission || item.ccipWrap?.hash ? "pending" : "error",

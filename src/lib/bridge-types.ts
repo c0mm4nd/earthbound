@@ -9,7 +9,7 @@ export type BridgeChainType =
   | "IOTAMOVE"
   | string;
 
-export type BridgeApiProvider = "stargate" | "stargate-v2" | "layerzero" | "ccip";
+export type BridgeApiProvider = "stargate" | "stargate-v2" | "layerzero" | "ccip" | "cctp";
 
 export interface BridgeChain {
   name: string;
@@ -21,7 +21,7 @@ export interface BridgeChain {
 }
 
 export interface BridgeToken {
-  bridgeProviders?: Array<"layerzero" | "ccip">;
+  bridgeProviders?: Array<"layerzero" | "ccip" | "cctp">;
   ccip?: { destinations: Array<{ chainKey: string; address: string }> };
   isSupported?: boolean;
   isBridgeable?: boolean;
@@ -115,6 +115,10 @@ export type QuoteUserStep =
 
 export interface BridgeQuote {
   provider?: BridgeApiProvider;
+  cctp?: {
+    sourceDomain: number; destinationDomain: number; sender: string; recipient: string;
+    maxFee: string; finality: 1000 | 2000; quotedAt: number;
+  };
   ccip?: {
     router: string;
     sourceSelector: string;

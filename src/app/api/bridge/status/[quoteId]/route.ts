@@ -17,6 +17,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
   try {
     const { quoteId } = await context.params;
     const searchParams = new URL(request.url).searchParams;
+    if (searchParams.get("provider") === "cctp" || quoteId.startsWith("cctp-")) return NextResponse.json({ error: "CCTP status requires the saved burn record and on-chain receipt verification." }, { status: 400 });
     if (searchParams.get("provider") === "ccip" || quoteId.startsWith("ccip:")) {
       try { ccipStatusQuery(quoteId, searchParams.get("txHash")); }
       catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid CCIP transfer." }, { status: 400 }); }

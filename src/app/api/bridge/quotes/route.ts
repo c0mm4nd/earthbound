@@ -7,6 +7,8 @@ import {
 } from "@/lib/layerzero";
 import { normalizeBridgeQuoteResponse } from "@/lib/bridge-normalization";
 import { CcipRequestError, getCcipQuote } from "@/lib/ccip-api";
+import { getCctpBridgeQuotes } from "@/lib/cctp-bridge";
+import { CctpRequestError } from "@/lib/cctp";
 import type {
   BridgeApiProvider,
   BridgeQuote,
@@ -159,6 +161,10 @@ function normalizeQuoteResponse(data: unknown) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    if (body?.provider === "cctp") {
+      try { return NextResponse.json(await getCctpBridgeQuotes(body)); }
+      catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : "CCTP quote unavailable." }, { status: error instanceof CctpRequestError ? 400 : 502 }); }
+    }
     if (body?.provider === "ccip") {
       try {
         return NextResponse.json(await getCcipQuote(body));
