@@ -70,7 +70,10 @@ import { bridgeTokenKey, ccipTransferKey, supportsCcipPair } from "@/lib/ccip";
 import { nativeConversionTransaction } from "@/lib/ccip-wrapped-native";
 import { ccipAptosStep, inspectAptosSubmission } from "@/lib/ccip-aptos";
 import { assertCcipQuote, executeCcipTransfer } from "@/lib/ccip-execution";
-import { assertCctpQuote, cctpEvm, cctpTransferKey, CCTP_STATE_LABELS, supportsCctpPair, type CctpTransfer } from "@/lib/cctp-evm";
+import { assertCctpQuote, cctpEvm, cctpTransferKey, CCTP_STATE_LABELS, type CctpTransfer } from "@/lib/cctp-evm";
+import { isStellarCctpRecipient } from "@/lib/stellar-address";
+import { supportsCctpPair, cctpNativeTransferKey, cctpAccountEqual, CCTP_CHAINS } from "@/lib/cctp-catalog";
+import type { CctpNativeTransfer } from "@/lib/cctp-native-lifecycle";
 import { claimCctpTransfer, initiateCctpTransfer, monitorCctpTransfer } from "@/lib/cctp-lifecycle";
 import { buildDirectOftQuote, supportsDirectOftRoute } from "@/lib/direct-oft";
 import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
@@ -1435,6 +1438,7 @@ function getExecutionPhaseLabel(phase: ExecutionPhase) {
 }
 
 function getExecutionHistoryStatus(item: ExecutionHistoryItem) {
+  if (item.cctpNative) return CCTP_STATE_LABELS[item.cctpNative.state];
   if (item.cctp) return CCTP_STATE_LABELS[item.cctp.state];
   if (item.ccipUnwrap && item.transferStatus === "COMPLETED" && !item.ccipUnwrap.confirmed) return item.ccipUnwrap.hash ? "Unwrap pending" : "Ready to unwrap";
   if (item.ccipWrap?.hash && !item.ccipSubmission) return item.ccipWrap.confirmed ? "Wrapped tokens ready" : "Wrap pending";
@@ -2827,7 +2831,6 @@ export function BridgeApp() {
       : destinationExternalWalletSession?.label ?? getChainTypeDisplayLabel(destinationChainType);
   const destinationAddressPlaceholder = getDestinationAddressPlaceholder(destinationChainType);
   const destinationAddressValidationCopy = getAddressValidationCopy(destinationChainType);
-  const canExecuteSelectedSourceChain = canExecuteSourceChainType(sourceChainType);
   const walletConnectButtonCopy = getWalletConnectLabel(sourceChainType);
   const hasPreferredDestinationWalletAddress = Boolean(
     preferredDestinationWalletAddress &&
@@ -3125,7 +3128,7 @@ export function BridgeApp() {
       } as const;
     }
 
-    if (!destinationAddress || !validateAddressForChainType(destinationChainType, destinationAddress)) {
+    if (!destinationAddress || !(validateAddressForChainType(destinationChainType, destinationAddress) || destinationChainType === "STELLAR" && supportsCctpPair(selectedSrcToken, selectedDstToken) && isStellarCctpRecipient(destinationAddress))) {
       return {
         ready: false,
         reason: destinationRecipientCopy,
@@ -3204,6 +3207,8 @@ export function BridgeApp() {
   }, [quotes, selectedQuoteRouteKey, quotedRequestKey, quoteRequestKey]);
 
   const availableQuoteCount = quotes.length;
+  const canExecuteSelectedSourceChain = canExecuteSourceChainType(sourceChainType) || (sourceChainType === "STELLAR" && quote?.provider === "cctp");
+
   const bestQuoteRouteKey = quotes[0] && quotes.every(candidate => Number.isFinite(getQuoteFeeUsdValue(candidate))) ? getQuoteRouteKey(quotes[0]) : null;
 
   const balanceEnabled = Boolean(
@@ -3732,7 +3737,66 @@ export function BridgeApp() {
     }
   }
 
+  function saveNativeCctpTransfer(historyId: string, cctpNative: CctpNativeTransfer, requireDurable = false) {
+    const phase = cctpNative.state === "complete" ? "success" : cctpNative.state === "failed" ? "error" : "pending";
+    updateExecutionHistoryItem(historyId, { cctpNative, phase, txHash: cctpNative.burnHash,
+      currentStep: CCTP_STATE_LABELS[cctpNative.state], error: undefined });
+    setExecutionState(current => current.activeHistoryId === historyId ? { ...current, phase, txHash: cctpNative.burnHash, currentStep: CCTP_STATE_LABELS[cctpNative.state], error: undefined } : current);
+    if (requireDurable) {
+      const saved = parseExecutionHistory(localStorage.getItem(EXECUTION_HISTORY_KEY)).find(item => item.id === historyId);
+      if (JSON.stringify(saved?.cctpNative) !== JSON.stringify(cctpNative)) throw new Error("CCTP recovery could not be saved. Enable browser storage before sending.");
+    }
+  }
+
+  async function sendNativeCctpStep(step: TransactionUserStep, payer: string, assertContext: () => void, submitted: (hash: string) => void) {
+    assertContext();
+    if (step.chainType === "EVM") {
+      const chain = chainByKey.get(step.chainKey), tx = step.transaction.encoded;
+      const domain = CCTP_CHAINS.find(c => c.chainKey === step.chainKey)?.domain;
+      if (!chain || domain === undefined || chain.chainType !== "EVM" || chain.chainId !== cctpEvm(domain).chainId || !tx.to || !tx.data) throw new Error("CCTP EVM transaction or network identity is unavailable.");
+      const hash = await sendEvmTransactionForChain(chain, { to: tx.to as Address, data: tx.data, value: BigInt(tx.value ?? "0"), from: payer as Address });
+      submitted(hash); return hash;
+    }
+    return bridgeWallets.executeUserSteps(step.chainType, [step], payer,
+      result => submitted(result.signature), { beforeSign: assertContext, submitted });
+  }
+
+  async function handleNativeCctpHistory(item: ExecutionHistoryItem, action: "check" | "claim" | "renew" | "recover", background: boolean) {
+    if (!item.cctpNative || cctpMonitoringRef.current || executionLockRef.current) return;
+    cctpMonitoringRef.current = true;
+    if (!background) setCheckingHistoryId(item.id);
+    try {
+      const { requestNativeCctp, executeNativeCctp } = await import("@/lib/cctp-native-client");
+      let transfer = item.cctpNative;
+      if (action === "recover") {
+        const { isCctpNativeHash } = await import("@/lib/cctp-native");
+        const hash = cctpRecoveryHash.trim(), claim = transfer.state === "claim_pending";
+        if (!isCctpNativeHash(claim ? transfer.destinationDomain : transfer.sourceDomain, hash)) throw new Error("Enter this network's transaction hash from wallet activity.");
+        transfer = { ...transfer, ...(claim ? { claimHash: hash } : { burnHash: hash }) };
+      }
+      const result = await requestNativeCctp<{ transfer: CctpNativeTransfer }>(transfer, action === "renew" ? "renew" : "status");
+      transfer = result.transfer; saveNativeCctpTransfer(item.id, transfer);
+      if (action === "recover") setCctpRecoveryHash("");
+      if (action !== "claim" || transfer.state !== "ready") return;
+      const config = CCTP_CHAINS.find(c => c.domain === transfer.destinationDomain)!, chain = chainByKey.get(config.chainKey);
+      const payer = config.family === "EVM" ? getAccount(wagmiConfig).address : nativeWalletSessionsRef.current[config.family]?.address;
+      if (!payer) throw new Error(`Connect a ${config.name} wallet to pay destination gas and claim USDC.`);
+      executionLockRef.current = true;
+      if (config.family === "EVM") { if (!chain) throw new Error("Destination network is unavailable."); await switchEvmChain(chain); }
+      const assertContext = () => {
+        const current = config.family === "EVM" ? getAccount(wagmiConfig).address : nativeWalletSessionsRef.current[config.family]?.address;
+        if (!current || !cctpAccountEqual(current, payer) || config.family === "EVM" && getAccount(wagmiConfig).chainId !== chain?.chainId) throw new Error("Claim wallet or network changed.");
+      };
+      await executeNativeCctp(transfer, "claim", payer, { assertContext,
+        persist: next => saveNativeCctpTransfer(item.id, next, true),
+        send: (step, submitted) => sendNativeCctpStep(step, payer, assertContext, submitted),
+      });
+    } catch (error) { updateExecutionHistoryItem(item.id, { error: getErrorMessage(error) }); }
+    finally { cctpMonitoringRef.current = false; if (action === "claim") executionLockRef.current = false; if (!background) setCheckingHistoryId(null); }
+  }
+
   async function handleCctpHistory(item: ExecutionHistoryItem, action: "check" | "claim" | "renew" | "recover" = "check", background = false) {
+    if (item.cctpNative) return handleNativeCctpHistory(item, action, background);
     if (!item.cctp || cctpMonitoringRef.current || executionLockRef.current) return;
     cctpMonitoringRef.current = true;
     if (!background) setCheckingHistoryId(item.id);
@@ -3782,7 +3846,7 @@ export function BridgeApp() {
 
   useEffect(() => {
     cctpPollRef.current = () => {
-      const pending = executionHistoryRef.current.filter(item => item.cctp?.burnHash && !["complete", "failed"].includes(item.cctp.state));
+      const pending = executionHistoryRef.current.filter(item => (item.cctpNative ?? item.cctp)?.burnHash && !["complete", "failed"].includes((item.cctpNative ?? item.cctp)!.state));
       if (pending.length) void handleCctpHistory(pending[cctpPollIndexRef.current++ % pending.length], "check", true);
     };
   });
@@ -4608,6 +4672,8 @@ export function BridgeApp() {
     quoteRequestState.ready,
   ]);
 
+  const nativeWalletSessionsRef = useRef(bridgeWallets.walletSessionsByChainType);
+  useEffect(() => { nativeWalletSessionsRef.current = bridgeWallets.walletSessionsByChainType; }, [bridgeWallets.walletSessionsByChainType]);
   const executionLockRef = useRef(false);
   const executionContext = JSON.stringify([srcChainKey, dstChainKey, srcTokenAddress, dstTokenAddress,
     amountInput, destinationAddress, sourceWalletAddress, useApiRoutes, selectedCustomOftConfigId]);
@@ -4615,7 +4681,9 @@ export function BridgeApp() {
   const unresolvedSubmittedTransfer = executionHistory.find(item =>
     ((item.ccipWrap?.hash && !item.ccipSubmission) || item.phase === "pending" || item.phase === "running") &&
     (((item.ccipSubmission || item.ccipWrap?.hash) && item.ccipTransferKey === currentCcipTransferKey) || (item.solanaSubmission && item.executionKey === executionContext)));
-  const unresolvedCctpTransfer = quote?.cctp && executionHistory.find(item => item.cctp &&
+  const unresolvedNativeCctpTransfer = quote?.cctpNative && executionHistory.find(item => item.cctpNative &&
+    !["complete", "failed", "preparing"].includes(item.cctpNative.state) && cctpNativeTransferKey(item.cctpNative) === cctpNativeTransferKey(quote.cctpNative!));
+  const unresolvedCctpTransfer = unresolvedNativeCctpTransfer || quote?.cctp && executionHistory.find(item => item.cctp &&
     !["complete", "failed", "preparing"].includes(item.cctp.state) &&
     cctpTransferKey(item.cctp) === cctpTransferKey({ ...quote.cctp!, amount: quote.srcAmount, state: "preparing" }));
   const executionContextRef = useRef(executionContext);
@@ -4679,6 +4747,29 @@ export function BridgeApp() {
 
     try {
       let lastTxHash: string | undefined;
+      if (quote.provider === "cctp" && quote.cctpNative) {
+        const { assertNativeCctpQuote, executeNativeCctp } = await import("@/lib/cctp-native-client");
+        const transfer = assertNativeCctpQuote(quote, quoteRequestState.payload);
+        if (!sourceWalletAddress || !cctpAccountEqual(sourceWalletAddress, transfer.sender)) throw new Error("Connect the CCTP source wallet.");
+        for (const [chain, domain] of [[srcChain, transfer.sourceDomain], [dstChain, transfer.destinationDomain]] as const) {
+          const config = CCTP_CHAINS.find(c => c.domain === domain)!;
+          if (chain.chainKey !== config.chainKey || chain.chainType !== config.family ||
+              config.family === "EVM" && (chain.chainId !== cctpEvm(domain).chainId || !wagmiConfig.chains.some(c => c.id === chain.chainId))) throw new Error("Configure the CCTP network before sending.");
+        }
+        if (srcChain.chainType === "EVM") await switchEvmChain(srcChain);
+        const assertContext = () => {
+          assertCurrentExecutionContext();
+          const account = srcChain.chainType === "EVM" ? getAccount(wagmiConfig).address : nativeWalletSessionsRef.current[srcChain.chainType]?.address;
+          if (!account || !cctpAccountEqual(account, transfer.sender) || srcChain.chainType === "EVM" && getAccount(wagmiConfig).chainId !== srcChain.chainId) throw new Error("Source wallet or network changed.");
+        };
+        saveNativeCctpTransfer(historyId, transfer, true);
+        await executeNativeCctp(transfer, "burn", sourceWalletAddress, { assertContext,
+          persist: next => saveNativeCctpTransfer(historyId, next, true),
+          send: (step, submitted) => sendNativeCctpStep(step, sourceWalletAddress, assertContext, submitted),
+        });
+        pushExecutionNotification({ tone: "neutral", title: "USDC burn submitted", message: "Transfers will monitor confirmation and the Circle proof. Claim there when it is ready." });
+        return;
+      }
       if (quote.provider === "cctp") {
         const transfer = assertCctpQuote(quote, quoteRequestState.payload);
         if (srcChain.chainId !== cctpEvm(transfer.sourceDomain).chainId || dstChain.chainId !== cctpEvm(transfer.destinationDomain).chainId) throw new Error("CCTP network identity mismatch.");
@@ -5130,8 +5221,8 @@ export function BridgeApp() {
     } catch (error) {
       const errorMessage = getErrorMessage(error);
       const ccipRecord = executionHistoryRef.current.find(item => item.id === historyId);
-      if (ccipRecord?.cctp) {
-        const pending = !["preparing", "failed"].includes(ccipRecord.cctp.state);
+      if (ccipRecord?.cctp || ccipRecord?.cctpNative) {
+        const pending = !["preparing", "failed"].includes((ccipRecord.cctpNative ?? ccipRecord.cctp)!.state);
         updateExecutionHistoryItem(historyId, { phase: pending ? "pending" : "error", error: errorMessage });
         setExecutionState(current => ({ ...current, phase: pending ? "pending" : "error", error: errorMessage }));
         return;
@@ -5976,7 +6067,7 @@ export function BridgeApp() {
                                 {formatQuoteEstimate(candidate.duration?.estimated)} · Fee{" "}
                                 {getQuoteFeeCopy(candidate)}
                               </p>
-                              {candidate.cctp ? <p className={`mt-1 text-xs ${isSelected ? "text-black/66" : "text-[var(--muted)]"}`}>Claim in Transfers after confirmation. Gas is paid separately on both chains.</p> : null}
+                              {candidate.cctp || candidate.cctpNative ? <p className={`mt-1 text-xs ${isSelected ? "text-black/66" : "text-[var(--muted)]"}`}>Claim in Transfers after confirmation. Gas is paid separately on both chains.</p> : null}
                             </div>
                             <div className="flex shrink-0 gap-2">
                               {isBest ? (
@@ -6136,13 +6227,13 @@ export function BridgeApp() {
                       {item.currentStep ? <p className="mt-2 break-words text-xs leading-5 text-white/60">{formatExecutionCopy(item.currentStep)}</p> : null}
                       {item.error ? <p className="mt-2 line-clamp-2 break-words text-xs leading-5 text-amber-200/80">{formatExecutionCopy(item.error)}</p> : null}
                       <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
-                        {item.cctp && !["complete", "failed", "preparing"].includes(item.cctp.state) ? <>
+                        {(item.cctpNative ?? item.cctp) && !["complete", "failed", "preparing"].includes((item.cctpNative ?? item.cctp)!.state) ? <>
                           <button type="button" disabled={checkingHistoryId !== null} onClick={() => void handleCctpHistory(item)} className="rounded-full border border-white/15 px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40">{checkingHistoryId === item.id ? "Checking…" : "Check status"}</button>
-                          {item.cctp.state === "ready" ? <>
+                          {(item.cctpNative ?? item.cctp)!.state === "ready" ? <>
                             <button type="button" disabled={checkingHistoryId !== null} onClick={() => void handleCctpHistory(item, "claim")} className="rounded-full bg-white px-2.5 py-1.5 text-black disabled:opacity-40">Claim USDC</button>
                             <button type="button" disabled={checkingHistoryId !== null} onClick={() => void handleCctpHistory(item, "renew")} className="rounded-full border border-white/15 px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40">Refresh proof</button>
                           </> : null}
-                          {(!item.cctp.burnHash || ["burn_pending", "claim_pending"].includes(item.cctp.state)) ? <div className="w-full space-y-2">
+                          {(!(item.cctpNative ?? item.cctp)!.burnHash || ["burn_pending", "claim_pending"].includes((item.cctpNative ?? item.cctp)!.state)) ? <div className="w-full space-y-2">
                             <input aria-label="CCTP recovery transaction hash" value={cctpRecoveryHash} onChange={event => setCctpRecoveryHash(event.target.value)} placeholder="Transaction hash from wallet activity" className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-xs" />
                             <button type="button" disabled={checkingHistoryId !== null} onClick={() => void handleCctpHistory(item, "recover")} className="rounded-full border border-white/15 px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40">Recover transaction</button>
                           </div> : null}
@@ -6178,7 +6269,7 @@ export function BridgeApp() {
                           {item.ccipWrap?.hash ? <div><dt className="text-white/40">Wrapping transaction</dt><dd className="mt-1 font-mono">{item.ccipWrap.hash}</dd></div> : null}
                           {item.ccipUnwrap?.hash ? <div><dt className="text-white/40">Unwrapping transaction</dt><dd className="mt-1 font-mono">{item.ccipUnwrap.hash}</dd></div> : null}
                           {item.txHash ? <div><dt className="text-white/40">Transaction</dt><dd className="mt-1 font-mono">{item.txHash}</dd></div> : null}
-                          {item.cctp?.claimHash ? <div><dt className="text-white/40">Claim transaction</dt><dd className="mt-1 font-mono">{item.cctp.claimHash}</dd></div> : null}
+                          {(item.cctpNative ?? item.cctp)?.claimHash ? <div><dt className="text-white/40">Claim transaction</dt><dd className="mt-1 font-mono">{(item.cctpNative ?? item.cctp)!.claimHash}</dd></div> : null}
                         </dl>
                         {item.error ? <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-5 text-amber-200/80">{formatExecutionCopy(item.error)}</p> : null}
                       </details>
