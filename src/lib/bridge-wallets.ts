@@ -960,8 +960,8 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expecte
   }
 
   const connection = getSolanaConnection();
-  if (userSteps.some(step => getEncodedTransactionPayload(step)?.ccip) &&
-      await connection.getGenesisHash() !== "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d") throw new Error("Connect to Solana mainnet for CCIP.");
+  if (userSteps.some(step => getEncodedTransactionPayload(step)?.ccip || getEncodedTransactionPayload(step)?.cctp) &&
+      await connection.getGenesisHash() !== "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d") throw new Error("Connect to Solana mainnet for this transfer.");
   let lastSignature: string | undefined;
   let executedSteps = 0;
 
@@ -1018,12 +1018,12 @@ export async function executeSolanaUserSteps(userSteps: QuoteUserStep[], expecte
 
       lastSignature = result.signature;
     } else if (provider.signTransaction) {
-      const originalMessage = getEncodedTransactionPayload(step)?.ccip ? versionedTransaction.message.serialize() : undefined;
+      const originalMessage = getEncodedTransactionPayload(step)?.ccip || getEncodedTransactionPayload(step)?.cctp ? versionedTransaction.message.serialize() : undefined;
       const signedTransaction = await provider.signTransaction(versionedTransaction);
       if (originalMessage) {
         const signedMessage = signedTransaction.message.serialize();
         if (signedMessage.length !== originalMessage.length || signedMessage.some((value, i) => value !== originalMessage[i])) {
-          throw new Error("The wallet changed the reviewed CCIP transaction. Refresh before sending.");
+          throw new Error(`The wallet changed the reviewed ${getEncodedTransactionPayload(step)?.cctp ? "CCTP" : "CCIP"} transaction. Refresh before sending.`);
         }
         assertWalletAccount(provider.publicKey?.toBase58(), expectedAccount);
         beforeSign?.();
@@ -1087,11 +1087,11 @@ export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expected
     }
 
     assertWalletAccount((await provider.account?.())?.address, expectedAccount, true);
-    if (encoded.ccip) {
+    if (encoded.ccip || encoded.cctp) {
       const network = await provider.network?.();
       const name = typeof network === "string" ? network : network?.name;
       const id = typeof network === "object" ? network.chainId ?? network.chain_id : undefined;
-      if (id !== undefined ? String(id) !== "1" : name?.toLowerCase() !== "mainnet") throw new Error("Switch the Aptos wallet to mainnet before sending CCIP.");
+      if (id !== undefined ? String(id) !== "1" : name?.toLowerCase() !== "mainnet") throw new Error("Switch the Aptos wallet to mainnet before sending.");
       assertWalletAccount((await provider.account?.())?.address, expectedAccount, true);
     }
     lifecycle?.beforeSign?.();
@@ -1109,7 +1109,7 @@ export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expected
               })();
 
     lastHash = getTransactionHash(submissionResult);
-    if (encoded.ccip && (!lastHash || !/^0x[0-9a-f]{64}$/i.test(lastHash))) throw new Error("The Aptos wallet did not return a valid transaction hash. Check wallet activity before retrying.");
+    if ((encoded.ccip || encoded.cctp) && (!lastHash || !/^0x[0-9a-f]{64}$/i.test(lastHash))) throw new Error("The Aptos wallet did not return a valid transaction hash. Check wallet activity before retrying.");
     if (lastHash) lifecycle?.submitted?.(lastHash);
     executedSteps += 1;
   }
@@ -1191,7 +1191,7 @@ export async function executeTronUserSteps(userSteps: QuoteUserStep[], expectedA
   return lastHash;
 }
 
-export async function executeStarknetUserSteps(userSteps: QuoteUserStep[], expectedAccount: string, walletId?: string) {
+export async function executeStarknetUserSteps(userSteps: QuoteUserStep[], expectedAccount: string, walletId?: string, lifecycle?: { beforeSign?: () => void; submitted?: (hash: string) => void }) {
   assertExternalPlan(userSteps, "STARKNET");
   const provider = getStarknetWalletProvider(walletId);
 
@@ -1221,6 +1221,13 @@ export async function executeStarknetUserSteps(userSteps: QuoteUserStep[], expec
 
     assertWalletAccount(provider.selectedAddress ?? provider.account?.address, expectedAccount, true);
     if (provider.account?.execute) assertWalletAccount(provider.account.address, expectedAccount, true);
+    if (encoded.cctp) {
+      const chainId = await provider.request?.({ type: "wallet_requestChainId" });
+      if (chainId !== "0x534e5f4d41494e" && chainId !== "SN_MAIN") throw new Error("Switch the Starknet wallet to mainnet before sending CCTP.");
+      assertWalletAccount(provider.selectedAddress ?? provider.account?.address, expectedAccount, true);
+      if (provider.account?.execute) assertWalletAccount(provider.account.address, expectedAccount, true);
+    }
+    lifecycle?.beforeSign?.();
     const accountCalls = calls.map(toStarknetAccountCall);
     const executionResult =
       provider.account?.execute
@@ -1235,6 +1242,11 @@ export async function executeStarknetUserSteps(userSteps: QuoteUserStep[], expec
             })();
 
     lastHash = getTransactionHash(executionResult) ?? lastHash;
+    if (encoded.cctp) {
+      if (!lastHash || !/^0x[\da-f]{1,64}$/i.test(lastHash) || BigInt(lastHash) >= BigInt(2) ** BigInt(251)) throw new Error("Wallet returned no valid Starknet hash. Check wallet activity before retrying.");
+      lastHash = `0x${BigInt(lastHash).toString(16).padStart(64, "0")}`;
+    }
+    if (lastHash) lifecycle?.submitted?.(lastHash);
     executedSteps += 1;
   }
 
@@ -1250,6 +1262,7 @@ async function executeSerializedMoveUserSteps(
   chainType: BridgeChainType,
   chain: `${string}:${string}`,
   executeTransaction: SerializedMoveTransactionExecutor,
+  lifecycle?: { beforeSign?: () => void; submitted?: (hash: string) => void },
 ) {
   assertExternalPlan(userSteps, chainType);
   let lastHash: string | undefined;
@@ -1272,11 +1285,15 @@ async function executeSerializedMoveUserSteps(
       throw new Error(`Unsupported ${chainType} transaction payload.`);
     }
 
+    lifecycle?.beforeSign?.();
     const result = await executeTransaction({
       transaction: serializedTransaction,
       chain,
     });
 
+    lastHash = getTransactionHash(result) ?? lastHash;
+    if (encoded.cctp && (!lastHash || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(lastHash))) throw new Error("Wallet returned no valid Sui digest. Check wallet activity before retrying.");
+    if (lastHash) lifecycle?.submitted?.(lastHash);
     const effects = (result as { effects?: { status?: { status?: string; error?: string } } } | null)?.effects;
     if (effects?.status?.status === "failure") throw new Error(effects.status.error ?? `${chainType} transaction failed.`);
     lastHash = getTransactionHash(result) ?? lastHash;
@@ -1293,12 +1310,14 @@ async function executeSerializedMoveUserSteps(
 export async function executeSuiUserSteps(
   userSteps: QuoteUserStep[],
   executeTransaction: SerializedMoveTransactionExecutor,
+  lifecycle?: { beforeSign?: () => void; submitted?: (hash: string) => void },
 ) {
   return executeSerializedMoveUserSteps(
     userSteps,
     "SUI",
     "sui:mainnet",
     executeTransaction,
+    lifecycle,
   );
 }
 

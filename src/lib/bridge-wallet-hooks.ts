@@ -292,7 +292,7 @@ export function useBridgeWallets() {
     lifecycle?: { beforeSign?: () => void; submitted?: (hash: string) => void },
   ) {
     if (!expectedAccount) throw new Error("Connect the source wallet and refresh the quote.");
-    if (["APTOS", "TRON", "STARKNET"].includes(chainType ?? "")) {
+    if (["APTOS", "TRON", "STARKNET", "STELLAR"].includes(chainType ?? "")) {
       const session = manualWalletSessions[chainType!];
       if (!session?.walletId || session.address !== expectedAccount) {
         throw new Error("Source wallet changed. Reconnect and refresh the quote.");
@@ -311,7 +311,9 @@ export function useBridgeWallets() {
       case "TRON":
         return executeTronUserSteps(userSteps, expectedAccount);
       case "STARKNET":
-        return executeStarknetUserSteps(userSteps, expectedAccount, manualWalletSessions.STARKNET?.walletId);
+        return executeStarknetUserSteps(userSteps, expectedAccount, manualWalletSessions.STARKNET?.walletId, lifecycle);
+      case "STELLAR":
+        return (await import("./cctp-stellar-wallet")).executeStellarCctpSteps(userSteps, expectedAccount, lifecycle);
       case "TON":
         if (tonWallet?.account.chain !== "-239") throw new Error("Connect a TON mainnet wallet before sending.");
         if (expectedAccount !== tonFriendlyAddress && expectedAccount !== tonRawAddress)
@@ -326,6 +328,7 @@ export function useBridgeWallets() {
         if (!account || account.address !== expectedAccount) throw new Error("Source wallet changed. Refresh the quote.");
         return executeSuiUserSteps(userSteps, ({ transaction, chain }) =>
           signAndExecuteSuiTransaction({ transaction, chain, account }),
+          lifecycle,
         );
       }
       case "IOTAMOVE": {

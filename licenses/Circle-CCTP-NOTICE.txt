@@ -1,0 +1,16 @@
+Circle CCTP artifacts
+
+src/lib/cctp-aptos-bytecode.ts contains unmodified mainnet Move bytecode from:
+https://github.com/circlefin/aptos-cctp/tree/440599d2aa7673cd26574377d77ccd5071d6c3be/typescript/example/precompiled-move-scripts/mainnet/v2
+Copyright (c) 2025, Circle Internet Group, Inc. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+The surrounding TypeScript representation is an Earthbound modification.
+
+scripts/fixtures/cctp-token_messenger_minter_v2.json and
+scripts/fixtures/cctp-message_transmitter_v2.json are reduced test-only IDLs from:
+https://github.com/circlefin/solana-cctp-contracts/tree/ec16e95d28ee47f7832df4203ae07b5981d146fc/examples/target/idl
+Copyright (c) 2025, Circle Internet Financial LTD All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0
+Unrelated instructions, types, events and PDA metadata have been removed.
+
+See Apache-2.0.txt for the license text.
