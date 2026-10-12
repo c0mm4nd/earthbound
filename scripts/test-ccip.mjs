@@ -149,6 +149,7 @@ function loadRoute(name) {
       if (id === "next/server") return { NextResponse: { json: (...args) => Response.json(...args) } };
       if (id === "@/lib/ccip") return load("ccip");
       if (id === "@/lib/ccip-status") return load("ccip-status");
+      if (id === "@/lib/cctp-bridge") return { mergeCctpTokens: tokens => tokens, cctpBridgeChains: () => [] };
       if (id === "@/lib/ccip-api") return { getCcipCatalog: async () => { if (!ccipAvailable) throw new Error("offline"); return catalog; } };
       if (id === "@/lib/layerzero") return { fetchLayerZeroJson: async () => {
         baseCalls++;

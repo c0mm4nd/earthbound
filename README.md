@@ -55,7 +55,17 @@ Validation:
 - `node scripts/test-execution-history.mjs` — durable records and interrupted-transfer recovery.
 - `node scripts/test-ccip-fork.mjs` — LINK Ethereum → Base approval and source send on a **local Anvil fork**; set `CCIP_FORK_DEST=solana` or `CCIP_FORK_DEST=aptos` for non-EVM destinations. Start the local app on port 3000 and an Ethereum Anvil fork on port 18545 first (commands are in the script). It funds only fork state, sends only to localhost, and restores the snapshot afterward. It does not test real destination delivery or broadcast mainnet transactions.
 
-### CCTP development preview
+### Circle CCTP
+
+Native USDC on supported EVM pairs quotes Circle CCTP Standard and Fast alongside OFT and CCIP, independently of the third-party quote toggle. The local CCTP flow approves the exact USDC amount, verifies both deployments and the burn limit, refreshes fees, and constructs the burn transaction locally. Gas on both networks is paid separately from the displayed protocol fee.
+
+Transfers stores the burn intent and transaction hash before confirmation. It polls the source receipt and Circle's proof service, validates the raw burn message against the original receipt and destination attesters, then exposes **Claim USDC**. A connected EVM wallet pays destination gas; the minted USDC always goes to the original recipient. Circle's `complete` attestation status is not displayed as delivered: the destination must have consumed the verified message nonce. Refreshing the page preserves recovery; **Recover transaction** accepts a replacement hash from wallet activity, and **Refresh proof** requests re-attestation for an expired Fast proof. Pending CCTP burns are retained beyond the recent-history limit.
+
+**Execution currently supports EVM → EVM only.** Solana, Aptos, Sui, Starknet and Stellar retain independent catalog, address and precision tests, but their CCTP wallet burn/mint adapters are not enabled. No EVM transaction is built for these families. The executable path uses V2 native USDC without hooks or forwarding; USYC and legacy Noble are outside this integration.
+
+Validation: `npm run test:cctp` covers fee binding, exact approvals, durable submission, proof tampering, pending/reverted claims, replay protection, provider isolation and the five independent non-EVM suites. `node scripts/test-cctp-fork.mjs` exercises deployed Ethereum and Base contracts on localhost forks, including actual source burn and destination mint. Start Anvil on ports 19545/19546 as documented in the script. The test enables a deterministic test attester only in the destination fork and restores both snapshots; it does not broadcast public transactions or prove Circle's live attestation service. Production deployment remains separate from this local work.
+
+#### Catalog and fee preview API
 
 `GET /api/bridge/cctp` returns the verified Circle native-USDC catalog for 30 mainnet domains, including Solana, Aptos, Sui, Starknet and Stellar. Domain IDs are separate from EVM chain IDs. BNB (USYC only) and legacy Noble are excluded from this USDC V2 preview.
 
@@ -71,7 +81,7 @@ Validation:
 }
 ```
 
-This is a **fee preview, not an executable route**: `executionReady` is always false. It is separate from the transfer form's OFT/CCIP quote comparison. Gas, forwarding fees, Fast allowance and onchain burn limits are not included or checked. Wallet burn submission, attestation binding, destination minting and recovery are still pending. Fees use integer arithmetic with upward rounding; Standard fees are read from the API, never assumed to be zero. Stellar source dust is explicit, destination amounts use seven decimals, and inbound routes flag the required `CctpForwarder`.
+This endpoint remains a **fee preview, not an executable route**: `executionReady` is always false. Executable EVM quotes use `/api/bridge/quotes` with `provider: "cctp"` and include a Fast allowance check. The preview excludes gas, forwarding, Fast allowance and onchain limits. Fees use integer arithmetic with upward rounding; Standard fees are read from the API, never assumed to be zero. Stellar source dust is explicit, destination amounts use seven decimals, and inbound routes flag the required `CctpForwarder`.
 
 Run `npm run test:cctp` for core/API tests and independent tests for each non-EVM family. These tests do not send transactions or claim destination settlement. Protocol references: [Circle domains](https://developers.circle.com/cctp/concepts/supported-chains-and-domains), [native USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses), [fee API](https://developers.circle.com/api-reference/cctp/all/get-burn-usdc-fees), and [Stellar behavior](https://developers.circle.com/cctp/references/stellar).
 
