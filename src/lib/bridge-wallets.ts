@@ -932,7 +932,7 @@ function assertExternalPlan(userSteps: QuoteUserStep[], chainType: string) {
           if (valid) VersionedTransaction.deserialize(base64ToBytes(data as string));
           break;
         }
-        case "APTOS": valid = Boolean(getAptosTransactionInput(encoded)); break;
+        case "APTOS": valid = encoded.cctp === true && typeof encoded.cctpScript === "string" || Boolean(getAptosTransactionInput(encoded)); break;
         case "TRON": valid = Boolean(getTronTransactionInput(encoded)); break;
         case "STARKNET": valid = Boolean(getStarknetTransactionInput(encoded)?.length); break;
         case "SUI": case "IOTAMOVE": valid = Boolean(getSerializedMoveTransaction(encoded)); break;
@@ -1080,7 +1080,15 @@ export async function executeAptosUserSteps(userSteps: QuoteUserStep[], expected
       throw new Error("Unsupported Aptos transaction payload.");
     }
 
-    const aptosTransactionInput = getAptosTransactionInput(encoded);
+    let aptosTransactionInput = getAptosTransactionInput(encoded);
+    if (encoded.cctp === true && typeof encoded.cctpScript === "string") {
+      const payload = (await import("./cctp-aptos-wallet")).cctpAptosWalletPayload(encoded.cctpScript);
+      // Choose one supported signing method before opening the wallet; never
+      // retry a possibly broadcast script through a different method.
+      aptosTransactionInput = provider.signAndSubmitBCSTransaction
+        ? { kind: "bcs", value: decodeEncodedBytes(encoded.cctpScript) }
+        : { kind: "payload", value: payload };
+    }
 
     if (!aptosTransactionInput) {
       throw new Error("Unsupported Aptos transaction payload.");

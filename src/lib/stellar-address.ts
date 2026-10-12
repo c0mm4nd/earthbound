@@ -45,3 +45,17 @@ export function stellarContractAddress(payload: Hex): string {
   }
   return encoded;
 }
+
+/** Validate the complete G/C/M address without discarding a muxed ID. */
+export function isStellarCctpRecipient(address: string): boolean {
+  if (!/^(?:[GC][A-Z2-7]{55}|M[A-Z2-7]{68})$/.test(address)) return false;
+  const bytes: number[] = []; let buffer = 0, bits = 0;
+  for (const char of address) {
+    buffer = (buffer << 5) | ALPHABET.indexOf(char); bits += 5;
+    if (bits >= 8) { bits -= 8; bytes.push((buffer >> bits) & 255); }
+    buffer &= (1 << bits) - 1;
+  }
+  const length = bytes.length, payload = Uint8Array.from(bytes.slice(0, -2));
+  return buffer === 0 && (address[0] === "M" ? length === 43 && bytes[0] === 96 : length === 35 && [16, 48].includes(bytes[0])) &&
+    checksum(payload) === (bytes[length - 2] | bytes[length - 1] << 8);
+}

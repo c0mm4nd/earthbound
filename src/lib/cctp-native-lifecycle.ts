@@ -1,11 +1,8 @@
 import { type Hex } from "viem";
-import { isCctpNativeHash, validateCctpNativeIntent, type CctpNativeIntent } from "./cctp-native";
+import { isCctpNativeHash, assertCctpNativeTransfer, type CctpNativeTransfer } from "./cctp-native-record";
+export { assertCctpNativeTransfer, type CctpNativeTransfer } from "./cctp-native-record";
 import { assertCctpNativeMessage, verifyCctpNativeProof, type CctpNativeProof } from "./cctp-native-proof";
 
-export type CctpNativeTransfer = CctpNativeIntent & {
-  state: "preparing" | "burn_pending" | "attestation_pending" | "ready" | "claim_pending" | "complete" | "failed";
-  burnHash?: string; claimHash?: string; sourceMessage?: Hex;
-};
 type ReceiptState = "pending" | "failed" | "confirmed";
 export interface CctpNativeMonitor {
   // Adapters must check the RPC's mainnet identity, the queried hash, receipt
@@ -16,16 +13,10 @@ export interface CctpNativeMonitor {
   nonceUsed(nonce: Hex): Promise<boolean>;
   claimReceipt(hash: string): Promise<ReceiptState>;
 }
-function assertTransfer(t: CctpNativeTransfer) {
-  validateCctpNativeIntent(t);
-  if (!["preparing", "burn_pending", "attestation_pending", "ready", "claim_pending", "complete", "failed"].includes(t.state) ||
-      t.burnHash !== undefined && !isCctpNativeHash(t.sourceDomain, t.burnHash) ||
-      t.claimHash !== undefined && !isCctpNativeHash(t.destinationDomain, t.claimHash)) throw new Error("Invalid CCTP native recovery record.");
-}
-const rejected = (error: unknown) => Boolean(error && typeof error === "object" && "code" in error && error.code === 4001);
+const rejected = (error: unknown) => Boolean(error && typeof error === "object" && ("code" in error && error.code === 4001 || "name" in error && error.name === "UserRejectedRequestError"));
 
 export async function monitorNativeCctp(t: CctpNativeTransfer, deps: CctpNativeMonitor): Promise<{ transfer: CctpNativeTransfer; proof?: CctpNativeProof }> {
-  assertTransfer(t);
+  assertCctpNativeTransfer(t);
   if (!t.burnHash) throw new Error("Recover the burn hash from wallet activity first.");
   const source = await deps.sourceReceipt(t);
   if (source.state === "failed") return { transfer: { ...t, state: "failed" } };
@@ -47,7 +38,7 @@ export async function monitorNativeCctp(t: CctpNativeTransfer, deps: CctpNativeM
 
 type Submission = (submitted: (hash: string) => void) => Promise<string | undefined>;
 type Persistence = { persist(t: CctpNativeTransfer): void; assertContext(): void };
-async function submitNative(t: CctpNativeTransfer, operation: "burn" | "claim", send: Submission, deps: Persistence) {
+export async function submitNative(t: CctpNativeTransfer, operation: "burn" | "claim", send: Submission, deps: Persistence) {
   const domain = operation === "burn" ? t.sourceDomain : t.destinationDomain;
   let savedHash: string | undefined;
   const submitted = (hash: string) => {
@@ -75,7 +66,7 @@ export async function initiateNativeCctp(t: CctpNativeTransfer, deps: Persistenc
   // before awaiting confirmation. It must never report an approval's hash.
   prepareBurn(): Promise<Submission>; refreshFee(): Promise<bigint>;
 }) {
-  assertTransfer(t);
+  assertCctpNativeTransfer(t);
   if (t.state !== "preparing" || t.burnHash) throw new Error("This CCTP burn needs recovery before retrying.");
   deps.assertContext();
   if (await deps.refreshFee() > BigInt(t.maxFee)) throw new Error("CCTP fees changed. Request a new quote.");

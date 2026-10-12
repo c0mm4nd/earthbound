@@ -115,6 +115,7 @@ export type QuoteUserStep =
 
 export interface BridgeQuote {
   provider?: BridgeApiProvider;
+  cctpNative?: import("./cctp-native").CctpNativeIntent & { quotedAt: number };
   cctp?: {
     sourceDomain: number; destinationDomain: number; sender: string; recipient: string;
     maxFee: string; finality: 1000 | 2000; quotedAt: number;

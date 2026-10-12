@@ -33,6 +33,7 @@ export function supportsCctpPair(source: BridgeToken | null, destination: Bridge
 }
 export const CCTP_ABI = parseAbi([
   "function depositForBurn(uint256 amount,uint32 destinationDomain,bytes32 mintRecipient,address burnToken,bytes32 destinationCaller,uint256 maxFee,uint32 minFinalityThreshold)",
+  "function depositForBurnWithHook(uint256 amount,uint32 destinationDomain,bytes32 mintRecipient,address burnToken,bytes32 destinationCaller,uint256 maxFee,uint32 minFinalityThreshold,bytes hookData)",
   "function receiveMessage(bytes message,bytes attestation) returns(bool)",
   "function localDomain() view returns(uint32)",
   "function localMessageTransmitter() view returns(address)",

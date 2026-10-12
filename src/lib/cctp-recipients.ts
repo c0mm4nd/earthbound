@@ -1,6 +1,6 @@
 import { isAddress, getAddress } from "viem";
 import { PublicKey } from "@solana/web3.js";
-import { StrKey } from "@stellar/stellar-sdk";
+import { isStellarCctpRecipient } from "./stellar-address";
 import { CctpRequestError } from "./cctp";
 import type { CctpFamily } from "./cctp-networks";
 
@@ -19,7 +19,7 @@ export function normalizeCctpRecipient(family: CctpFamily, value: unknown): stri
     } catch { /* Fall through to the same user-facing validation error. */ }
   } else if (family === "STELLAR") {
     // Preserve G/C/M type and muxed account ID; raw bytes32 would lose them.
-    if (StrKey.isValidEd25519PublicKey(value) || StrKey.isValidContract(value) || StrKey.isValidMed25519PublicKey(value)) return value;
+    if (isStellarCctpRecipient(value)) return value;
   } else if (["APTOS", "SUI", "STARKNET"].includes(family) && /^0x[\da-f]{1,64}$/i.test(value)) {
     const address = BigInt(value);
     const upperBound = family === "STARKNET" ? BigInt(2) ** BigInt(251) : BigInt(2) ** BigInt(256);

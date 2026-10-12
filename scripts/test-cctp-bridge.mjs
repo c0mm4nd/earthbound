@@ -40,7 +40,8 @@ test('native USDC catalog preserves provider metadata, direction and case-sensit
   assert.ok(mergeCctpTokens([], 'ethereum', cctpEvm(0).usdc).every(t => t.chainKey !== 'ethereum'));
   const solana = mergeCctpTokens([{ chainKey: 'solana', address: 'AbC' }, { chainKey: 'solana', address: 'abc' }], 'solana', 'AbC');
   assert.equal(solana.length, 2);
-  assert.ok(cctpBridgeChains().every(c => c.chainType === 'EVM' && c.chainId > 0));
+  assert.ok(cctpBridgeChains().filter(c => c.chainType === 'EVM').every(c => c.chainId > 0));
+  assert.equal(cctpBridgeChains().filter(c => c.chainType !== 'EVM').map(c => c.chainType).sort().join(','), 'APTOS,SOLANA,STARKNET,STELLAR,SUI');
 });
 
 function route(name) {

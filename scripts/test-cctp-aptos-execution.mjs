@@ -29,9 +29,9 @@ const { createLoader } = await import('./helpers/load-ts.mjs');
 let network = 'mainnet', account = '0x123', submits = 0;
 const hash = '0x' + '01'.repeat(32), events = [];
 const provider = { account: async () => ({ address: account }), network: async () => network,
-  signAndSubmitTransaction: async payload => { submits++; assert.equal(payload.data, burn.script); return { hash }; } };
+  signAndSubmitTransaction: async payload => { submits++; assert.deepEqual(Buffer.from(payload.data.bytecode), Buffer.from(burn.script.bytecode)); assert.equal(payload.data.functionArguments[0].value, 9007199254740993n); return { hash }; } };
 const executor = createLoader({}, { window: { aptos: provider } })('bridge-wallets').executeAptosUserSteps;
-const step = { type: 'TRANSACTION', chainType: 'APTOS', chainKey: 'aptos', transaction: { encoded: { cctp: true, payload: { data: burn.script } } } };
+const step = { type: 'TRANSACTION', chainType: 'APTOS', chainKey: 'aptos', transaction: { encoded: { cctp: true, cctpScript: burn.bcsToHex().toString() } } };
 await executor([step], account, undefined, { beforeSign: () => events.push('before'), submitted: h => events.push(h) });
 assert.deepEqual(events, ['before', hash]);
 network = 'testnet'; await assert.rejects(() => executor([step], account), /mainnet/);
@@ -56,3 +56,18 @@ emitter = '0x123::message_transmitter::MessageSent'; await assert.rejects(() => 
 for (const state of ['pending', 'missing', 'failure']) { status = state; assert.equal((await monitor.receipt(hash)).state, state === 'failure' ? 'failed' : 'pending'); }
 chainId = 2; await assert.rejects(() => monitor.attesters(), /mainnet/);
 console.log('CCTP Aptos monitor: receipt identity, official emitter, pending/reverted receipts, mainnet and attester/nonce views passed.');
+
+const walletPayload = load('cctp-aptos-wallet').cctpAptosWalletPayload;
+assert.equal(walletPayload(hook.bcsToHex().toString()).data.functionArguments.length, 8);
+assert.equal(walletPayload(mint.bcsToHex().toString()).data.functionArguments.length, 2);
+assert.throws(() => walletPayload(burn.bcsToHex().toString() + '00'), /Invalid/);
+
+let bcsSubmits = 0;
+provider.signAndSubmitBCSTransaction = async bytes => {
+  bcsSubmits++; assert.deepEqual(Buffer.from(bytes), Buffer.from(burn.bcsToBytes())); return { hash };
+};
+await executor([step], account);
+assert.equal(bcsSubmits, 1); assert.equal(submits, 1, 'select BCS before signing when the wallet exposes it');
+provider.signAndSubmitBCSTransaction = async () => { throw Error('response lost'); };
+await assert.rejects(() => executor([step], account), /response lost/);
+assert.equal(submits, 1, 'never fall back to a second signing method after an uncertain response');

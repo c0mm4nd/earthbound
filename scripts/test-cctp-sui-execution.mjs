@@ -59,3 +59,20 @@ status = 'failure'; assert.equal((await monitor.receipt(wallet)).state, 'failed'
 digest = 'wrong'; await assert.rejects(() => monitor.receipt(wallet), /digest/);
 network = 'testnet'; await assert.rejects(() => monitor.attesters(), /mainnet/);
 console.log('CCTP Sui monitor: real mainnet state, typed emitter, receipt digest, effects, dynamic nonce table and wrong-network checks passed.');
+
+// Wallets can hold coin objects, address balances, or both. Exact burn amount
+// must be split without consuming the remainder as a fee or a second transfer.
+const coinIntent = intent(8, { amount: '1000000' });
+const objects = b.cctpSuiBurnTransaction(coinIntent, { coins: [{ coinObjectId: '0x1234', balance: '700000' }, { coinObjectId: '0x5678', balance: '500000' }], addressBalance: '0' }).getData();
+assert.equal(objects.inputs.some(i => i.FundsWithdrawal), false);
+assert.equal(objects.commands[0].$kind, 'MergeCoins');
+assert.equal(objects.commands[1].$kind, 'SplitCoins');
+assert.equal(objects.commands[2].MoveCall.function, 'deposit_for_burn');
+const mixed = b.cctpSuiBurnTransaction(coinIntent, { coins: [{ coinObjectId: '0x1234', balance: '400000' }], addressBalance: '600000' }).getData();
+assert.equal(mixed.commands[0].MoveCall.function, 'redeem_funds');
+assert.equal(mixed.commands[1].$kind, 'MergeCoins');
+assert.equal(mixed.commands[2].$kind, 'SplitCoins');
+assert.throws(() => b.cctpSuiBurnTransaction(coinIntent, { coins: [{ coinObjectId: '0x1234', balance: '400000' }], addressBalance: '599999' }), /Insufficient/);
+const onlyBalance = b.cctpSuiBurnTransaction(coinIntent, { coins: [], addressBalance: '1000000' }).getData();
+assert.equal(onlyBalance.commands[2].$kind, 'TransferObjects', 'consume the empty coin produced by redeem_funds');
+console.log('CCTP Sui funding: coin objects, mixed address balance, exact split, insufficient balance and produced-coin ownership passed.');

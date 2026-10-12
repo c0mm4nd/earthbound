@@ -1,4 +1,4 @@
-import { Transaction } from "@mysten/sui/transactions";
+import { Transaction, type TransactionObjectArgument } from "@mysten/sui/transactions";
 import { type Hex } from "viem";
 import { nativeCctpBurnArgs, type CctpNativeIntent } from "./cctp-native";
 import { cctpNetwork } from "./cctp";
@@ -15,9 +15,24 @@ export const CCTP_SUI = {
   treasury: "0x57d6725e7a8b49a7b2a612f6bd66ab5f39fc95332ca48be421c3229d514a6de7",
 };
 const usdc = cctpNetwork(8).usdc, c = CCTP_SUI;
-export function cctpSuiBurnTransaction(t: CctpNativeIntent) {
+export function cctpSuiBurnTransaction(t: CctpNativeIntent, funding?: { coins: Array<{ coinObjectId: string; balance: string }>; addressBalance: string }) {
   const a = nativeCctpBurnArgs(t, 8), tx = new Transaction(); tx.setSender(t.sender);
-  const [coin] = tx.moveCall({ target: "0x2::coin::redeem_funds", typeArguments: [usdc], arguments: [tx.withdrawal({ amount: a.amount, type: usdc })] });
+  let coin;
+  if (funding) {
+    const total = funding.coins.reduce((sum, c) => sum + BigInt(c.balance), BigInt(0));
+    const withdrawal = a.amount > total ? a.amount - total : BigInt(0);
+    if (withdrawal > BigInt(funding.addressBalance)) throw new Error("Insufficient native USDC balance.");
+    const coins: TransactionObjectArgument[] = funding.coins.map(c => tx.object(c.coinObjectId));
+    if (withdrawal) coins.push(tx.moveCall({ target: "0x2::coin::redeem_funds", typeArguments: [usdc], arguments: [tx.withdrawal({ amount: withdrawal, type: usdc })] })[0]);
+    if (!coins.length) throw new Error("No USDC available to burn.");
+    const primary = coins[0];
+    if (coins.length > 1) tx.mergeCoins(primary, coins.slice(1));
+    [coin] = tx.splitCoins(primary, [tx.pure.u64(a.amount)]);
+    // A coin produced by redeem_funds must also be consumed, even if empty.
+    if (!funding.coins.length) tx.transferObjects([primary], t.sender);
+  } else {
+    [coin] = tx.moveCall({ target: "0x2::coin::redeem_funds", typeArguments: [usdc], arguments: [tx.withdrawal({ amount: a.amount, type: usdc })] });
+  }
   const [receipt, returnedCoin] = tx.moveCall({ target: `${c.messenger}::deposit_for_burn::deposit_for_burn`, typeArguments: [usdc],
     arguments: [coin, tx.pure.u32(t.destinationDomain), tx.pure.address(a.mintRecipient), tx.pure.address(a.destinationCaller),
       tx.pure.u256(a.maxFee), tx.pure.u32(t.finality), tx.pure.vector("u8", [...Buffer.from(a.hook.slice(2), "hex")]), tx.object(c.messengerState)] });
