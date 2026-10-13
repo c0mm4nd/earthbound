@@ -29,7 +29,7 @@ export function mergeCctpTokens(tokens: BridgeToken[], fromChain?: string | null
   if (include) for (const c of CCTP_CHAINS) {
     if (source && c.domain === source.domain) continue;
     const key = `${c.chainKey}:${c.usdc.startsWith("0x") ? c.usdc.toLowerCase() : c.usdc}`, existing = result.get(key);
-    result.set(key, { ...existing, chainKey: c.chainKey, address: c.usdc, symbol: "USDC", name: "USDC", decimals: c.decimals,
+    result.set(key, { ...existing, chainKey: c.chainKey, address: c.usdc, symbol: "USDC", name: "USDC", decimals: c.decimals, icon: "/icons/tokens/usdc.svg",
       isSupported: true, isBridgeable: true, isVerified: true,
       bridgeProviders: [...new Set([...(existing?.bridgeProviders ?? []), "cctp" as const])],
     });

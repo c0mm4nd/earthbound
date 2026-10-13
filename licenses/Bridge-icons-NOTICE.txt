@@ -1,0 +1,26 @@
+Bridge artwork sources
+
+CCIP mark (public/icons/protocols/ccip.svg) and network SVGs, except
+sui.svg and codex.svg:
+  https://github.com/smartcontractkit/documentation
+  Revision: 955b60bf451e3928c1383a2568173717d0e268dd
+  Paths: public/images/ccip-logo.svg and public/assets/chains/*.svg
+  License: Chainlink-documentation-MIT.txt
+
+Circle mark used beside the Circle CCTP label (protocols/cctp.svg):
+  https://www.circle.com/brand
+  https://6778953.fs1.hubspotusercontent-na1.net/hubfs/6778953/Pressroom/brandkit/logo-downloads/circle-logo-2024.zip
+  Original path: circle-logo/icon svg/circle-icon.svg
+
+USDC token mark (tokens/usdc.svg):
+  https://www.circle.com/brand
+  https://6778953.fs1.hubspotusercontent-na1.net/hubfs/6778953/Pressroom/brandkit/logo-downloads/usdc.zip
+  Original path: Token Logo/USDC Token.svg
+
+Sui and Codex network marks (networks/sui.svg, networks/codex.svg):
+  https://icons-ckg.pages.dev/stargate-light/networks/sui.svg
+  https://icons-ckg.pages.dev/stargate-light/networks/codex.svg
+
+Artwork retained without visual modification; source whitespace normalized. Names and marks belong to their
+respective owners and identify networks, assets and protocols. Their display
+does not imply that Earthbound is operated or endorsed by those owners.

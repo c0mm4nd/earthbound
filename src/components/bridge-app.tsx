@@ -1,5 +1,7 @@
 "use client";
 
+import { AssetIcon, ProtocolIcon } from "@/components/asset-icon";
+import { getTokenIconUrl, getTokenSymbolIconUrl, getChainIconUrl } from "@/lib/bridge-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   erc20Abi,
@@ -116,7 +118,6 @@ const FALLBACK_STARGATE_TOKEN_SYMBOL_ALIASES: Record<string, string> = {
   "optimism:0x7f5c764cbc14f9669b88837ca1490cca17c31607": "USDC.e",
   "polygon:0x2791bca1f2de4661ed88a30c99a7a9449aa84174": "USDC.e",
 };
-const STARGATE_ICONS_BASE_URL = "https://icons-ckg.pages.dev/stargate-light";
 const BRIDGE_API_KEY_HEADER = "x-bridge-api-key";
 const LAYERZERO_API_KEY_STORAGE_KEY = "earthbound.layerzero_api_key";
 const CUSTOM_OFT_CONFIGS_STORAGE_KEY = "earthbound.custom_oft_configs.v1";
@@ -296,36 +297,6 @@ function formatTokenAmount(value: string | undefined, decimals: number, digits =
   return `${whole}.${fraction.slice(0, digits)}`.replace(/\.$/, "");
 }
 
-function normalizeStargateTokenIconSymbol(symbol?: string) {
-  if (!symbol) {
-    return null;
-  }
-
-  if (symbol === "USDT0.s") {
-    return "USDT0";
-  }
-
-  return symbol;
-}
-
-function getStargateTokenIconUrl(symbol?: string) {
-  const normalizedSymbol = normalizeStargateTokenIconSymbol(symbol);
-
-  if (!normalizedSymbol) {
-    return undefined;
-  }
-
-  return `${STARGATE_ICONS_BASE_URL}/tokens/${normalizedSymbol.toLowerCase()}.svg`;
-}
-
-function getStargateChainIconUrl(chainKey?: string) {
-  if (!chainKey) {
-    return undefined;
-  }
-
-  return `${STARGATE_ICONS_BASE_URL}/networks/${chainKey}.svg`;
-}
-
 function getBridgeTokenId(token?: Pick<BridgeToken, "address" | "chainKey"> | null) {
   if (!token) {
     return undefined;
@@ -409,7 +380,7 @@ function getTokenPresentation(
     return {
       symbol,
       name: stargateDetails?.name ?? token.name,
-      iconUrl: stargateDetails?.icon ?? getStargateTokenIconUrl(symbol),
+      iconUrl: getTokenIconUrl(token, stargateDetails?.icon, symbol),
       priceUsd: stargateDetails?.price?.usd ?? token.price?.usd,
     };
   }
@@ -417,7 +388,7 @@ function getTokenPresentation(
   return {
     symbol: token.symbol,
     name: token.name,
-    iconUrl: getStargateTokenIconUrl(token.symbol),
+    iconUrl: getTokenIconUrl(token),
     priceUsd: token.price?.usd,
   };
 }
@@ -1603,110 +1574,6 @@ function SectionHeading({
   );
 }
 
-function AssetIconBadge({
-  label,
-  src,
-  size = "sm",
-}: {
-  label: string;
-  src?: string;
-  size?: "xs" | "sm" | "md";
-}) {
-  const [hasImageError, setHasImageError] = useState(false);
-  const content = label.replace(/[^a-z0-9]/gi, "").slice(0, 2) || "?";
-  const sizeClass =
-    size === "xs"
-      ? "h-3.5 w-3.5 text-[6px]"
-      : size === "sm"
-        ? "h-[1.125rem] w-[1.125rem] text-[7px]"
-        : "h-5 w-5 text-[8px]";
-
-  if (!src || hasImageError) {
-    return (
-      <span
-        className={`inline-flex ${sizeClass} items-center justify-center overflow-hidden rounded-full border border-[var(--panel)] bg-black font-semibold uppercase tracking-[0.12em] text-white`}
-        aria-hidden="true"
-      >
-        {content}
-      </span>
-    );
-  }
-
-  return (
-    <span
-      className={`inline-flex ${sizeClass} items-center justify-center overflow-hidden rounded-full border border-[var(--panel)] bg-black`}
-      aria-hidden="true"
-    >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={src}
-        alt=""
-        className="h-full w-full object-cover"
-        onError={() => setHasImageError(true)}
-      />
-    </span>
-  );
-}
-
-function AssetIcon({
-  label,
-  src,
-  badgeLabel,
-  badgeSrc,
-  size = "md",
-}: {
-  label: string;
-  src?: string;
-  badgeLabel?: string;
-  badgeSrc?: string;
-  size?: "xs" | "sm" | "md";
-}) {
-  const [hasImageError, setHasImageError] = useState(false);
-  const content = label.replace(/[^a-z0-9]/gi, "").slice(0, size === "md" ? 3 : 2) || "?";
-  const sizeClass =
-    size === "xs"
-      ? "h-4 w-4 text-[7px]"
-      : size === "sm"
-        ? "h-9 w-9 text-[9px]"
-        : "h-11 w-11 text-[11px]";
-
-  if (!src || hasImageError) {
-    return (
-      <span
-        className={`relative inline-flex ${sizeClass} shrink-0 items-center justify-center rounded-full border border-white/12 bg-white/[0.06] font-semibold uppercase tracking-[0.18em] text-white`}
-        aria-hidden="true"
-      >
-        {content}
-        {badgeLabel ? (
-          <span className="pointer-events-none absolute -right-0.5 -bottom-0.5">
-            <AssetIconBadge label={badgeLabel} src={badgeSrc} size={size} />
-          </span>
-        ) : null}
-      </span>
-    );
-  }
-
-  return (
-    <span
-      className={`relative inline-flex ${sizeClass} shrink-0 items-center justify-center overflow-hidden rounded-full border border-white/12 bg-white/[0.06]`}
-      aria-hidden="true"
-    >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={src}
-        alt=""
-        className="h-full w-full object-cover"
-        onError={() => setHasImageError(true)}
-      />
-      {badgeLabel ? (
-        <span className="pointer-events-none absolute -right-0.5 -bottom-0.5">
-          <AssetIconBadge label={badgeLabel} src={badgeSrc} size={size} />
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 function InlineAssetLabel({
   label,
   src,
@@ -2783,17 +2650,17 @@ export function BridgeApp() {
   const selectedSrcTokenSymbol = selectedSrcTokenPresentation?.symbol ?? "--";
   const selectedDstTokenSymbol = selectedDstTokenPresentation?.symbol ?? "--";
   const selectedSrcTokenIconUrl =
-    selectedSrcTokenPresentation?.iconUrl ?? getStargateTokenIconUrl(selectedSrcTokenSymbol);
+    selectedSrcTokenPresentation?.iconUrl ?? getTokenSymbolIconUrl(selectedSrcTokenSymbol);
   const selectedDstTokenIconUrl =
-    selectedDstTokenPresentation?.iconUrl ?? getStargateTokenIconUrl(selectedDstTokenSymbol);
+    selectedDstTokenPresentation?.iconUrl ?? getTokenSymbolIconUrl(selectedDstTokenSymbol);
   const customOftSourceTokenSymbol = customOftSourceTokenPresentation?.symbol ?? "--";
   const customOftDestinationTokenSymbol = customOftDestinationTokenPresentation?.symbol ?? "--";
   const customOftSourceTokenIconUrl =
     customOftSourceTokenPresentation?.iconUrl ??
-    getStargateTokenIconUrl(customOftSourceTokenSymbol);
+    getTokenSymbolIconUrl(customOftSourceTokenSymbol);
   const customOftDestinationTokenIconUrl =
     customOftDestinationTokenPresentation?.iconUrl ??
-    getStargateTokenIconUrl(customOftDestinationTokenSymbol);
+    getTokenSymbolIconUrl(customOftDestinationTokenSymbol);
   const activeBalanceToken = isCustomOftSource ? customOftSourceToken : selectedSrcToken;
   const activeBalanceTokenSymbol =
     isCustomOftSource ? customOftSourceTokenSymbol : selectedSrcTokenSymbol;
@@ -2851,7 +2718,7 @@ export function BridgeApp() {
       supportedChains.map((chain) => ({
         key: chain.chainKey,
         badgeText: chain.shortName,
-        iconUrl: getStargateChainIconUrl(chain.chainKey),
+        iconUrl: getChainIconUrl(chain.chainKey),
         title: chain.name,
         subtitle: `${chain.shortName} · ${getChainTypeDisplayLabel(chain.chainType)}`,
         meta: chain.nativeCurrency.symbol,
@@ -2884,7 +2751,7 @@ export function BridgeApp() {
           badgeText: displaySymbol,
           iconUrl: presentation?.iconUrl,
           iconBadgeLabel: chain?.shortName ?? token.chainKey,
-          iconBadgeUrl: getStargateChainIconUrl(token.chainKey),
+          iconBadgeUrl: getChainIconUrl(token.chainKey),
           title: displaySymbol,
           subtitle: buildTokenOptionSubtitle(presentation?.name ?? token.name, chain),
           meta: buildTokenOptionMeta(chain, presentation?.priceUsd),
@@ -2919,7 +2786,7 @@ export function BridgeApp() {
       selectableDestinationChains.map((chain) => ({
         key: chain.chainKey,
         badgeText: chain.shortName,
-        iconUrl: getStargateChainIconUrl(chain.chainKey),
+        iconUrl: getChainIconUrl(chain.chainKey),
         title: chain.name,
         subtitle: `${chain.shortName} · ${getChainTypeDisplayLabel(chain.chainType)}`,
         meta: chain.nativeCurrency.symbol,
@@ -2952,7 +2819,7 @@ export function BridgeApp() {
           badgeText: displaySymbol,
           iconUrl: presentation?.iconUrl,
           iconBadgeLabel: chain?.shortName ?? token.chainKey,
-          iconBadgeUrl: getStargateChainIconUrl(token.chainKey),
+          iconBadgeUrl: getChainIconUrl(token.chainKey),
           title: displaySymbol,
           subtitle: buildTokenOptionSubtitle(presentation?.name ?? token.name, chain),
           meta: buildTokenOptionMeta(chain, presentation?.priceUsd),
@@ -3014,9 +2881,9 @@ export function BridgeApp() {
             {
               key: `custom-oft:${config.id}:${deployment.chainKey}`,
               badgeText: symbol,
-              iconUrl: getStargateTokenIconUrl(symbol),
+              iconUrl: getTokenSymbolIconUrl(symbol),
               iconBadgeLabel: chain.shortName,
-              iconBadgeUrl: getStargateChainIconUrl(deployment.chainKey),
+              iconBadgeUrl: getChainIconUrl(deployment.chainKey),
               title: symbol,
               subtitle: buildTokenOptionSubtitle(config.name, chain),
               meta: "OFT",
@@ -3056,7 +2923,7 @@ export function BridgeApp() {
       customOftRuntimeDestinationChains.map((chain) => ({
         key: chain.chainKey,
         badgeText: chain.shortName,
-        iconUrl: getStargateChainIconUrl(chain.chainKey),
+        iconUrl: getChainIconUrl(chain.chainKey),
         title: chain.name,
         subtitle: `${chain.shortName} · ${getChainTypeDisplayLabel(chain.chainType)}`,
         meta: chain.nativeCurrency.symbol,
@@ -3087,7 +2954,7 @@ export function BridgeApp() {
           badgeText: symbol,
           iconUrl: customOftDestinationTokenIconUrl,
           iconBadgeLabel: customOftDstChain?.shortName ?? dstChainKey,
-          iconBadgeUrl: customOftDstChain ? getStargateChainIconUrl(customOftDstChain.chainKey) : undefined,
+          iconBadgeUrl: customOftDstChain ? getChainIconUrl(customOftDstChain.chainKey) : undefined,
           title: symbol,
           subtitle: buildTokenOptionSubtitle(selectedCustomOftConfig?.name ?? symbol, customOftDstChain),
           selected: true,
@@ -4718,8 +4585,8 @@ export function BridgeApp() {
       routeLabel: formatQuoteRouteLabel(quote),
       srcChainName: srcChain.shortName,
       dstChainName: dstChain.shortName,
-      srcChainIconUrl: getStargateChainIconUrl(srcChain.chainKey),
-      dstChainIconUrl: getStargateChainIconUrl(dstChain.chainKey),
+      srcChainIconUrl: getChainIconUrl(srcChain.chainKey),
+      dstChainIconUrl: getChainIconUrl(dstChain.chainKey),
       srcTokenSymbol: selectedSrcTokenSymbol,
       dstTokenSymbol: selectedDstTokenSymbol,
       srcTokenIconUrl: selectedSrcTokenIconUrl,
@@ -5421,8 +5288,8 @@ export function BridgeApp() {
       routeLabel: `Custom OFT · ${selectedCustomOftConfig.name}`,
       srcChainName: customOftSrcChain.shortName,
       dstChainName: customOftDstChain.shortName,
-      srcChainIconUrl: getStargateChainIconUrl(customOftSrcChain.chainKey),
-      dstChainIconUrl: getStargateChainIconUrl(customOftDstChain.chainKey),
+      srcChainIconUrl: getChainIconUrl(customOftSrcChain.chainKey),
+      dstChainIconUrl: getChainIconUrl(customOftDstChain.chainKey),
       srcTokenSymbol: customOftSourceTokenSymbol,
       dstTokenSymbol: customOftDestinationTokenSymbol,
       srcTokenIconUrl: customOftSourceTokenIconUrl,
@@ -6056,8 +5923,9 @@ export function BridgeApp() {
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-medium">
-                                {formatQuoteRouteLabel(candidate)}
+                              <p className="flex items-center gap-2 text-sm font-medium">
+                                <ProtocolIcon provider={candidate.provider} />
+                                <span className="truncate">{formatQuoteRouteLabel(candidate)}</span>
                               </p>
                               <p
                                 className={`mt-1 text-xs ${
@@ -6145,13 +6013,13 @@ export function BridgeApp() {
                       </div>
                       <p className="mt-1.5 flex items-center gap-1.5 text-sm text-white">
                         <span>{customOftSrcChain ? (
-                          <InlineAssetLabel label={customOftSrcChain.shortName} src={getStargateChainIconUrl(customOftSrcChain.chainKey)} size="xs">
+                          <InlineAssetLabel label={customOftSrcChain.shortName} src={getChainIconUrl(customOftSrcChain.chainKey)} size="xs">
                             {customOftSrcChain.shortName}
                           </InlineAssetLabel>
                         ) : <span className="text-[var(--muted)]">Select source</span>}</span>
                         <ArrowRightIcon className="h-3 w-3 shrink-0 text-[var(--muted)]" />
                         <span>{customOftDstChain ? (
-                          <InlineAssetLabel label={customOftDstChain.shortName} src={getStargateChainIconUrl(customOftDstChain.chainKey)} size="xs">
+                          <InlineAssetLabel label={customOftDstChain.shortName} src={getChainIconUrl(customOftDstChain.chainKey)} size="xs">
                             {customOftDstChain.shortName}
                           </InlineAssetLabel>
                         ) : <span className="text-[var(--muted)]">Select dest</span>}</span>
@@ -6223,7 +6091,10 @@ export function BridgeApp() {
                         </span>
                       </div>
                       <p className="mt-2 break-words text-sm font-medium">{item.srcAmount} <span className="font-normal text-white/40">→</span> {item.expectedDstAmount}</p>
-                      <p className="mt-1 text-[11px] text-[var(--muted)]">{formatTimeLabel(item.createdAt)} · {formatHistoryRouteLabel(item.routeLabel)}</p>
+                      <p className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--muted)]">
+                        <ProtocolIcon provider={item.cctp || item.cctpNative || item.routeLabel.includes("CCTP") ? "cctp" : item.ccipSubmission || item.routeLabel.includes("CCIP") ? "ccip" : undefined} />
+                        <span>{formatTimeLabel(item.createdAt)} · {formatHistoryRouteLabel(item.routeLabel)}</span>
+                      </p>
                       {item.currentStep ? <p className="mt-2 break-words text-xs leading-5 text-white/60">{formatExecutionCopy(item.currentStep)}</p> : null}
                       {item.error ? <p className="mt-2 line-clamp-2 break-words text-xs leading-5 text-amber-200/80">{formatExecutionCopy(item.error)}</p> : null}
                       <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">

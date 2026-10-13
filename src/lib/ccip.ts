@@ -43,7 +43,7 @@ export function mergeBridgeTokens(base: BridgeToken[], ccip: BridgeToken[]) {
     const key = bridgeTokenKey(token);
     const existing = tokens.get(key);
     tokens.set(key, existing ? {
-      ...token, ...existing, ccip: token.ccip,
+      ...token, ...existing, ccip: token.ccip, icon: existing.icon ?? token.icon,
       bridgeProviders: ["layerzero", "ccip"],
     } : token);
   }
