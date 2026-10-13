@@ -2308,7 +2308,6 @@ export function BridgeApp() {
   const [quotedRequestKey, setQuotedRequestKey] = useState("");
   const [selectedQuoteRouteKey, setSelectedQuoteRouteKey] = useState<string | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [quoteWarnings, setQuoteWarnings] = useState<string[]>([]);
   const [isQuoting, setIsQuoting] = useState(false);
   const [lastQuoteUpdatedAt, setLastQuoteUpdatedAt] = useState<number | null>(null);
   const [executionState, setExecutionState] = useState<ExecutionState>({
@@ -4247,7 +4246,6 @@ export function BridgeApp() {
     setSelectedQuoteRouteKey(null);
     setQuoteError(null);
     setLastQuoteUpdatedAt(null);
-    setQuoteWarnings([]);
     setExecutionState({ phase: "idle" });
   }, [srcChainKey]);
 
@@ -4319,7 +4317,6 @@ export function BridgeApp() {
     setLastQuoteUpdatedAt(null);
     setExecutionState({ phase: "idle" });
     quoteRequestIdRef.current += 1;
-    setQuoteWarnings([]);
     isQuotingRef.current = false;
     setIsQuoting(false);
   }, [amountInput, destinationAddress, dstChainKey, dstTokenAddress, srcChainKey, srcTokenAddress, bridgeApiProvider, sourceWalletAddress, activeExternalWalletSession?.walletId, evmConnector?.uid, useApiRoutes]);
@@ -4450,7 +4447,6 @@ export function BridgeApp() {
       }
 
       setQuotes(nextQuotes);
-      setQuoteWarnings(warnings);
       setQuotedRequestKey(quoteRequestKey);
       setSelectedQuoteRouteKey((current) => {
         if (current && nextQuotes.some((candidate) => getQuoteRouteKey(candidate) === current)) {
@@ -4466,7 +4462,6 @@ export function BridgeApp() {
       }
 
       setQuotes([]);
-      setQuoteWarnings([]);
       setQuoteError(getErrorMessage(error));
     } finally {
       if (requestId === quoteRequestIdRef.current) {
@@ -5755,7 +5750,7 @@ export function BridgeApp() {
                 {!isCustomOftSource && quote?.provider === "ccip" ? (
                   <p className="mt-3 text-xs text-[var(--muted)]">{sourceChainUsesEvmWallet ? "Send with CCIP from your wallet. The displayed fee includes a 1% ceiling; only the current fee is sent. Source network gas is additional." : "Send with CCIP from your wallet. The fee estimate includes a 1% buffer; the router charges the fee at execution. Source network gas is additional."}</p>
                 ) : null}
-                {[...new Set([...(chainsQuery.data?.warnings ?? []), ...(tokensQuery.data?.warnings ?? []), ...(routeTokensQuery.data?.warnings ?? []), ...quoteWarnings])].map(warning => (
+                {[...new Set([...(chainsQuery.data?.warnings ?? []), ...(tokensQuery.data?.warnings ?? []), ...(routeTokensQuery.data?.warnings ?? [])])].map(warning => (
                   <p key={warning} role="status" className="mt-2 text-xs text-amber-200/80">{warning}</p>
                 ))}
 
