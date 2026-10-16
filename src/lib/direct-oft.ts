@@ -649,7 +649,12 @@ export async function buildDirectOftQuote(
       (dstChain.chainType === "SOLANA" && dstAmount > (BigInt(1) << BigInt(64)) - BigInt(1)))
     throw new Error("OFT amount exceeds the shared or destination integer limit.");
   await destination.validateReceive?.(to, dstAmount);
-  const userSteps = await source.buildSteps(sendParam, fee);
+  // Solana sends require a funded source token account and a recent blockhash.
+  // Fee previews only need quoteOft/quoteSend; build and simulate the send when
+  // execution refreshes the quote, so wallet funding cannot hide a valid route.
+  const userSteps = srcChain.chainType === "SOLANA" && !args.simulate
+    ? []
+    : await source.buildSteps(sendParam, fee);
   const tokenFee = receipt.amountSentLD - receipt.amountReceivedLD;
   const nativeUsd = srcChain.nativeCurrency.price?.usd;
   const tokenUsd = srcToken.price?.usd;

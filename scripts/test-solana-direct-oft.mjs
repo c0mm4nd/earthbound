@@ -179,7 +179,7 @@ const calldata = decodeFunctionData({
 });
 assert.equal(calldata.args[0].to, toHex(new PublicKey(solWallet).toBytes()));
 assert.equal(calldata.args[0].extraOptions, options);
-const reverse = await buildDirectOftQuote({
+const reverseArgs = {
   metadata,
   srcChain: solChain,
   dstChain: evmChain,
@@ -189,12 +189,35 @@ const reverse = await buildDirectOftQuote({
   to: evmWallet,
   amount: 10n ** 9n,
   read,
-});
+};
+const reverse = await buildDirectOftQuote({ ...reverseArgs, simulate: true });
 assert.equal(reverse.dstAmount, "1000000000000000000");
 assert.equal(reverse.directOft.nativeFee, "777");
 assert.equal(reverse.fees[0].symbol, "SOL");
 assert.equal(solSend.to, `0x${evmWallet.slice(2).padStart(64, "0")}`);
 assert.equal(reverse.userSteps[0].chainType, "SOLANA");
+// A valid route must remain quotable before the wallet is funded. The same
+// failure must still stop execution's fresh, simulated quote before signing.
+const buildSolanaSteps = solAdapter.buildSteps;
+for (const message of [
+  "Source Solana token account does not exist.",
+  "Source Solana token account is frozen.",
+  "Insufficient token balance in the source Solana token account.",
+]) {
+  let buildCalls = 0;
+  solAdapter.buildSteps = async () => { buildCalls++; throw new Error(message); };
+  for (const amount of [1_000_000n, 1_000_000_000n, 20_000_000_000n]) {
+    const preview = await buildDirectOftQuote({ ...reverseArgs, amount });
+    assert.equal(preview.userSteps.length, 0, "preview must not build a Solana send");
+    assert.equal(preview.directOft.nativeFee, "777");
+    assert.ok(BigInt(preview.dstAmount) > 0n);
+  }
+  assert.equal(buildCalls, 0, "preview must not inspect source token funding");
+  await assert.rejects(buildDirectOftQuote({ ...reverseArgs, simulate: true }), { message });
+  assert.equal(buildCalls, 1, "execution must still validate the source account");
+}
+solAdapter.buildSteps = buildSolanaSteps;
+console.log("Solana fee previews bypass send-account funding checks; execution retains fresh validation.");
 const discoveryRead = (params) => {
   if (params.address.toLowerCase() === evmToken.toLowerCase() && params.functionName === "token") throw new Error("Token is not the OFT adapter");
   return read(params);

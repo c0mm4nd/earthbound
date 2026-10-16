@@ -131,8 +131,12 @@ export async function createConsoleOftSource(args: {
       const raw = await connection.getAccountInfo(ata);
       if (!raw) throw new Error("Source Solana token account does not exist.");
       const source = unpackAccount(ata, raw, store.tokenProgram);
-      if (!source.owner.equals(owner) || !source.mint.equals(store.mint) || !source.isInitialized || source.isFrozen || source.amount < value.amountLD)
-        throw new Error("Source Solana token account is frozen or has insufficient balance.");
+      if (!source.owner.equals(owner) || !source.mint.equals(store.mint) || !source.isInitialized)
+        throw new Error("Source Solana token account does not match the wallet or selected token.");
+      if (source.isFrozen)
+        throw new Error("Source Solana token account is frozen. Contact the token issuer.");
+      if (source.amount < value.amountLD)
+        throw new Error("Insufficient token balance in the source Solana token account.");
       const feeAccount = unpackAccount(store.feeDeposit, await connection.getAccountInfo(store.feeDeposit), store.tokenProgram);
       if (!feeAccount.mint.equals(store.mint) || !feeAccount.isInitialized || feeAccount.isFrozen || getMemoTransfer(feeAccount)?.requireIncomingTransferMemos)
         throw new Error("Invalid Console OFT fee deposit account.");

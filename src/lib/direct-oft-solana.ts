@@ -18,7 +18,7 @@ import {
   unpackMint,
   unpackAccount,
 } from "@solana/spl-token";
-import { hexToBytes, toHex, type Hex } from "viem";
+import { formatUnits, hexToBytes, toHex, type Hex } from "viem";
 import type { BridgeToken, LayerZeroOftListDeployment } from "./bridge-types";
 import type { DirectOftAdapter } from "./direct-oft-types";
 import { solanaOftTokenAccountSize } from "./solana-token-extensions";
@@ -259,13 +259,13 @@ export async function createSolanaOftAdapter(args: {
       if (
         !tokenAccount.owner.equals(owner) ||
         !tokenAccount.mint.equals(mintKey) ||
-        !tokenAccount.isInitialized ||
-        tokenAccount.isFrozen ||
-        tokenAccount.amount < value.amountLD
+        !tokenAccount.isInitialized
       )
-        throw new Error(
-          "Source Solana token account is frozen or has insufficient balance.",
-        );
+        throw new Error("Source Solana token account does not match the wallet or selected token.");
+      if (tokenAccount.isFrozen)
+        throw new Error("Source Solana token account is frozen. Contact the token issuer.");
+      if (tokenAccount.amount < value.amountLD)
+        throw new Error(`Insufficient ${args.token.symbol} balance in the source Solana token account: available ${formatUnits(tokenAccount.amount, mint.decimals)}, required ${formatUnits(value.amountLD, mint.decimals)}.`);
       const ix = await oft.send(
         umi.rpc,
         {

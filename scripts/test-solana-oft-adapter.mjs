@@ -245,6 +245,19 @@ assert.equal(
   1039280n,
 );
 await assert.rejects(adapter.buildSteps(sendParam, fee), /does not exist/);
+const frozenData = Buffer.from(tokenData);
+frozenData[108] = 2;
+accounts.set(ata.toBase58(), info(TOKEN_PROGRAM_ID, frozenData));
+await assert.rejects(adapter.buildSteps(sendParam, fee), /is frozen\. Contact the token issuer/);
+const emptyData = Buffer.from(tokenData);
+emptyData.writeBigUInt64LE(0n, 64);
+accounts.set(ata.toBase58(), info(TOKEN_PROGRAM_ID, emptyData));
+await assert.rejects(adapter.buildSteps(sendParam, fee), /available 0, required 1/);
+const wrongOwnerData = Buffer.from(tokenData);
+wrongOwnerData.set(pk(20).toBytes(), 32);
+accounts.set(ata.toBase58(), info(TOKEN_PROGRAM_ID, wrongOwnerData));
+await assert.rejects(adapter.buildSteps(sendParam, fee), /does not match the wallet/);
+assert.equal(simulationCalls, 1, "invalid source accounts must fail before send simulation");
 accounts.set(ata.toBase58(), info(TOKEN_PROGRAM_ID, tokenData));
 simulationError = { InstructionError: [1, "Custom"] };
 await assert.rejects(adapter.buildSteps(sendParam, fee), /simulation failed/);
