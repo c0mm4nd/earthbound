@@ -211,6 +211,25 @@ const adapter = await createSolanaOftAdapter(args);
 assert.equal(adapter.decimals, 9);
 assert.equal(adapter.sharedDecimals, 6);
 assert.equal(adapter.addressBytes32, toHex(store.toBytes()));
+// USDG's existing Ethereum peer does not imply an Arbitrum peer exists.
+await assert.rejects(createSolanaOftAdapter({ ...args, remoteEid: 30110,
+  remoteChainName: "Arbitrum", token: { ...args.token, symbol: "USDG" } }), {
+  code: "SOLANA_OFT_PEER_NOT_CONFIGURED",
+  message: "No direct OFT connection is configured for USDG between Solana and Arbitrum. Choose another destination or check third-party quotes for alternatives.",
+});
+const zeroPeerData = Buffer.from(peerData);
+zeroPeerData.fill(0, 8, 40);
+accounts.set(peer.toBase58(), info(program, zeroPeerData));
+await assert.rejects(createSolanaOftAdapter(args), { code: "SOLANA_OFT_PEER_NOT_CONFIGURED" });
+for (const invalid of [info(pk(20), peerData), info(program, Buffer.alloc(8)), info(program, peerData, true)]) {
+  accounts.set(peer.toBase58(), invalid);
+  await assert.rejects(createSolanaOftAdapter(args), /peer account failed validation/);
+}
+accounts.delete(peer.toBase58());
+accounts.set(program.toBase58(), info(pk(11), [], false));
+await assert.rejects(createSolanaOftAdapter(args), /program is missing or not executable/);
+accounts.set(program.toBase58(), info(pk(11), [], true));
+accounts.set(peer.toBase58(), info(program, peerData));
 const sendParam = {
   dstEid: 30101,
   to: `0x${"01".repeat(32)}`,

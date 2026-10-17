@@ -189,7 +189,8 @@ async function discoverPeerMetadata(args: DirectOftQuoteArgs, hints: Address[] =
     const results = await Promise.allSettled(stores.map(async (storeAddress) => {
       const solana = await createSolanaOftAdapter({ rpcUrl: args.solanaRpcUrl, storeAddress,
         deployment: { address: args.srcToken.address }, token: args.srcToken,
-        remoteEid: getLayerZeroV2EndpointId(args.dstChain.chainKey)!, simulate: false });
+        remoteEid: getLayerZeroV2EndpointId(args.dstChain.chainKey)!,
+        remoteChainName: args.dstChain.shortName ?? args.dstChain.chainKey, simulate: false });
       if (!/^0x0{24}[0-9a-f]{40}$/i.test(solana.peer)) throw new Error("Invalid Solana OFT EVM peer.");
       const address = `0x${solana.peer.slice(-40)}` as Address;
       const [token, peer] = await Promise.all([
@@ -204,6 +205,13 @@ async function discoverPeerMetadata(args: DirectOftQuoteArgs, hints: Address[] =
       } };
     }));
     const discovered = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    // A missing peer is an unconfigured route, not a malformed program. Keep
+    // that message readable, but never mask other validation failures.
+    if (!discovered.length && results.length && results.every((result) =>
+      result.status === "rejected" && result.reason?.code === "SOLANA_OFT_PEER_NOT_CONFIGURED")) {
+      const first = results[0];
+      if (first.status === "rejected") throw first.reason;
+    }
     if (!discovered.length && results.length) throw new Error(`No verified Solana OFT route. ${results.flatMap((result) => result.status === "rejected" ? [String(result.reason)] : []).join("; ")}`);
     return { discovered };
   }
@@ -232,6 +240,7 @@ async function discoverPeerMetadata(args: DirectOftQuoteArgs, hints: Address[] =
         deployment: { address: remoteToken.address },
         token: remoteToken,
         remoteEid: localEid,
+        remoteChainName: local.shortName ?? local.chainKey,
         simulate: false,
       }).catch((error: unknown) => {
         throw Object.assign(new Error(error instanceof Error ? error.message : String(error)), { code: "SOLANA_OFT_VALIDATION" });
@@ -588,6 +597,7 @@ export async function buildDirectOftQuote(
         deployments[sourceIsSolana ? srcChain.chainKey : dstChain.chainKey],
       token: sourceIsSolana ? srcToken : dstToken,
       remoteEid: sourceIsSolana ? dstEid : srcEid,
+      remoteChainName: (sourceIsSolana ? dstChain : srcChain).shortName ?? (sourceIsSolana ? dstChain : srcChain).chainKey,
       from: sourceIsSolana ? from : undefined,
       simulate: args.simulate ?? false,
     });

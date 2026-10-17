@@ -240,6 +240,27 @@ const consoleArgs = { ...discoveryArgs, srcChain: solChain, dstChain: evmChain, 
   from: solWallet, to: evmWallet, amount: 10n ** 9n,
   fetchDiscoveryQuote: async () => { throw new Error("Unexpected API call"); } };
 assert.equal((await buildConsoleQuote(consoleArgs)).dstAmount, reverse.dstAmount);
+const missingPeerMessage = "No direct OFT connection is configured for this token between Solana and Ethereum.";
+const missingPeer = () => Object.assign(new Error(missingPeerMessage), { code: "SOLANA_OFT_PEER_NOT_CONFIGURED" });
+const { buildDirectOftQuote: buildMissingPeerQuote } = load("direct-oft", {
+  "./direct-oft-solana": { createSolanaOftAdapter: async (args) => {
+    assert.equal(args.remoteChainName, "ethereum");
+    throw missingPeer();
+  } },
+  "./direct-oft-solana-discovery": { discoverSolanaOftStores: async () => [solStore.toBase58()] },
+});
+await assert.rejects(buildMissingPeerQuote(consoleArgs), {
+  message: missingPeerMessage, code: "SOLANA_OFT_PEER_NOT_CONFIGURED",
+});
+const { buildDirectOftQuote: buildOtherStoreQuote } = load("direct-oft", {
+  "./direct-oft-solana": { createSolanaOftAdapter: async ({ storeAddress }) => {
+    if (storeAddress !== solStore.toBase58()) throw missingPeer();
+    return solAdapter;
+  } },
+  "./direct-oft-solana-discovery": { discoverSolanaOftStores: async () => [solMint, solStore.toBase58()] },
+});
+assert.equal((await buildOtherStoreQuote(consoleArgs)).dstAmount, reverse.dstAmount,
+  "a missing peer in one candidate must not hide another verified route");
 await assert.rejects(buildConsoleQuote({ ...consoleArgs, read: (p) => p.functionName === "token" ? Promise.resolve(evmWallet) : discoveryRead(p) }), /destination token/);
 await assert.rejects(buildConsoleQuote({ ...consoleArgs, read: (p) => p.functionName === "peers" ? Promise.resolve('0x' + '00'.repeat(32)) : discoveryRead(p) }), /reverse peer/);
 console.log("Solana discovery: verified API hints, mint-authority source discovery, reciprocal peers, token identity and fresh direct quotes passed.");

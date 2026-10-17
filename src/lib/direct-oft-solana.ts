@@ -72,6 +72,7 @@ export async function createSolanaOftAdapter(args: {
   deployment: LayerZeroOftListDeployment;
   token: BridgeToken;
   remoteEid: number;
+  remoteChainName?: string;
   from?: string;
   simulate: boolean;
 }): Promise<DirectOftAdapter> {
@@ -123,12 +124,15 @@ export async function createSolanaOftAdapter(args: {
     connection.getAccountInfo(peerKey),
     connection.getAccountInfo(programId),
   ]);
-  if (
-    !programRaw?.executable ||
-    !peerRaw?.owner.equals(programId) ||
-    toHex(peerRaw.data.subarray(0, 8)) !== PEER_DISCRIMINATOR
-  )
-    throw new Error("Invalid Solana OFT program or peer account.");
+  if (!programRaw?.executable)
+    throw new Error("The Solana OFT program is missing or not executable.");
+  const missingPeer = () => Object.assign(new Error(
+    `No direct OFT connection is configured for ${args.token.symbol || "this token"} between Solana and ${args.remoteChainName || "the selected network"}. Choose another destination or check third-party quotes for alternatives.`,
+  ), { code: "SOLANA_OFT_PEER_NOT_CONFIGURED" });
+  if (!peerRaw) throw missingPeer();
+  if (peerRaw.executable || !peerRaw.owner.equals(programId) ||
+    toHex(peerRaw.data.subarray(0, 8)) !== PEER_DISCRIMINATOR)
+    throw new Error("The Solana OFT peer account failed validation.");
   if (
     !mintRaw ||
     (!mintRaw.owner.equals(TOKEN_PROGRAM_ID) &&
@@ -142,6 +146,7 @@ export async function createSolanaOftAdapter(args: {
   const peer = oft.accounts
     .getPeerConfigAccountDataSerializer()
     .deserialize(peerRaw.data)[0];
+  if (peer.peerAddress.every((byte) => byte === 0)) throw missingPeer();
   let exponent = 0;
   let rate = store.ld2sdRate;
   while (rate > BigInt(1) && rate % BigInt(10) === BigInt(0)) {
