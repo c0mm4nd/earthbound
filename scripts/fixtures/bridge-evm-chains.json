@@ -1,0 +1,592 @@
+[
+  {
+    "chainKey": "base",
+    "chainId": 8453,
+    "layerzero": true
+  },
+  {
+    "chainKey": "arbitrum",
+    "chainId": 42161,
+    "layerzero": true
+  },
+  {
+    "chainKey": "ethereum",
+    "chainId": 1,
+    "layerzero": true
+  },
+  {
+    "chainKey": "bsc",
+    "chainId": 56,
+    "layerzero": true
+  },
+  {
+    "chainKey": "hyperliquid",
+    "chainId": 999,
+    "layerzero": true
+  },
+  {
+    "chainKey": "optimism",
+    "chainId": 10,
+    "layerzero": true
+  },
+  {
+    "chainKey": "avalanche",
+    "chainId": 43114,
+    "layerzero": true
+  },
+  {
+    "chainKey": "linea",
+    "chainId": 59144,
+    "layerzero": true
+  },
+  {
+    "chainKey": "polygon",
+    "chainId": 137,
+    "layerzero": true
+  },
+  {
+    "chainKey": "plasma",
+    "chainId": 9745,
+    "layerzero": true
+  },
+  {
+    "chainKey": "citrea",
+    "chainId": 4114,
+    "layerzero": true
+  },
+  {
+    "chainKey": "sonic",
+    "chainId": 146,
+    "layerzero": true
+  },
+  {
+    "chainKey": "soneium",
+    "chainId": 1868,
+    "layerzero": true
+  },
+  {
+    "chainKey": "unichain",
+    "chainId": 130,
+    "layerzero": true
+  },
+  {
+    "chainKey": "ink",
+    "chainId": 57073,
+    "layerzero": true
+  },
+  {
+    "chainKey": "abstract",
+    "chainId": 2741,
+    "layerzero": true
+  },
+  {
+    "chainKey": "monad",
+    "chainId": 143,
+    "layerzero": true
+  },
+  {
+    "chainKey": "peaq",
+    "chainId": 3338,
+    "layerzero": true
+  },
+  {
+    "chainKey": "scroll",
+    "chainId": 534352,
+    "layerzero": true
+  },
+  {
+    "chainKey": "doma",
+    "chainId": 97477,
+    "layerzero": true
+  },
+  {
+    "chainKey": "flare",
+    "chainId": 14,
+    "layerzero": true
+  },
+  {
+    "chainKey": "sei",
+    "chainId": 1329,
+    "layerzero": true
+  },
+  {
+    "chainKey": "megaeth",
+    "chainId": 4326,
+    "layerzero": true
+  },
+  {
+    "chainKey": "stable",
+    "chainId": 988,
+    "layerzero": true
+  },
+  {
+    "chainKey": "bera",
+    "chainId": 80094,
+    "layerzero": true
+  },
+  {
+    "chainKey": "tempo",
+    "chainId": 4217,
+    "layerzero": true
+  },
+  {
+    "chainKey": "tac",
+    "chainId": 239,
+    "layerzero": true
+  },
+  {
+    "chainKey": "ethereal",
+    "chainId": 5064014,
+    "layerzero": true
+  },
+  {
+    "chainKey": "somnia",
+    "chainId": 5031,
+    "layerzero": true
+  },
+  {
+    "chainKey": "fantom",
+    "chainId": 250,
+    "layerzero": true
+  },
+  {
+    "chainKey": "og",
+    "chainId": 16661,
+    "layerzero": true
+  },
+  {
+    "chainKey": "plumephoenix",
+    "chainId": 98866,
+    "layerzero": true
+  },
+  {
+    "chainKey": "hemi",
+    "chainId": 43111,
+    "layerzero": true
+  },
+  {
+    "chainKey": "iota",
+    "chainId": 8822,
+    "layerzero": true
+  },
+  {
+    "chainKey": "mantle",
+    "chainId": 5000,
+    "layerzero": true
+  },
+  {
+    "chainKey": "robinhood",
+    "chainId": 4663,
+    "layerzero": true
+  },
+  {
+    "chainKey": "fraxtal",
+    "chainId": 252,
+    "layerzero": true
+  },
+  {
+    "chainKey": "metis",
+    "chainId": 1088,
+    "layerzero": true
+  },
+  {
+    "chainKey": "katana",
+    "chainId": 747474,
+    "layerzero": true
+  },
+  {
+    "chainKey": "kava",
+    "chainId": 2222,
+    "layerzero": true
+  },
+  {
+    "chainKey": "blast",
+    "chainId": 81457,
+    "layerzero": true
+  },
+  {
+    "chainKey": "morph",
+    "chainId": 2818,
+    "layerzero": true
+  },
+  {
+    "chainKey": "xlayer",
+    "chainId": 196,
+    "layerzero": true
+  },
+  {
+    "chainKey": "zircuit",
+    "chainId": 48900,
+    "layerzero": true
+  },
+  {
+    "chainKey": "rootstock",
+    "chainId": 30,
+    "layerzero": true
+  },
+  {
+    "chainKey": "coredao",
+    "chainId": 1116,
+    "layerzero": true
+  },
+  {
+    "chainKey": "goat",
+    "chainId": 2345,
+    "layerzero": true
+  },
+  {
+    "chainKey": "bob",
+    "chainId": 60808,
+    "layerzero": true
+  },
+  {
+    "chainKey": "flow",
+    "chainId": 747,
+    "layerzero": true
+  },
+  {
+    "chainKey": "telos",
+    "chainId": 40,
+    "layerzero": true
+  },
+  {
+    "chainKey": "hedera",
+    "chainId": 295,
+    "layerzero": true
+  },
+  {
+    "chainKey": "zksync",
+    "chainId": 324,
+    "layerzero": true
+  },
+  {
+    "chainKey": "celo",
+    "chainId": 42220,
+    "layerzero": true
+  },
+  {
+    "chainKey": "conflux",
+    "chainId": 1030,
+    "layerzero": true
+  },
+  {
+    "chainKey": "mode",
+    "chainId": 34443,
+    "layerzero": true
+  },
+  {
+    "chainKey": "worldchain",
+    "chainId": 480,
+    "layerzero": true
+  },
+  {
+    "chainKey": "xdc",
+    "chainId": 50,
+    "layerzero": true
+  },
+  {
+    "chainKey": "pharos",
+    "chainId": 1672,
+    "layerzero": true
+  },
+  {
+    "chainKey": "ape",
+    "chainId": 33139,
+    "layerzero": true
+  },
+  {
+    "chainKey": "nibiru",
+    "chainId": 6900,
+    "layerzero": true
+  },
+  {
+    "chainKey": "chiliz",
+    "chainId": 88888,
+    "layerzero": true
+  },
+  {
+    "chainKey": "cronosevm",
+    "chainId": 25,
+    "layerzero": true
+  },
+  {
+    "chainKey": "klaytn",
+    "chainId": 8217,
+    "layerzero": true
+  },
+  {
+    "chainKey": "manta",
+    "chainId": 169,
+    "layerzero": true
+  },
+  {
+    "chainKey": "gatelayer",
+    "chainId": 10088,
+    "layerzero": true
+  },
+  {
+    "chainKey": "beam",
+    "chainId": 4337,
+    "layerzero": true
+  },
+  {
+    "chainKey": "rayls",
+    "chainId": 72957,
+    "layerzero": true
+  },
+  {
+    "chainKey": "codex",
+    "chainId": 81224,
+    "layerzero": true
+  },
+  {
+    "chainKey": "opn",
+    "chainId": 222,
+    "layerzero": true
+  },
+  {
+    "chainKey": "kite",
+    "chainId": 2366,
+    "layerzero": true
+  },
+  {
+    "chainKey": "etherlink",
+    "chainId": 42793,
+    "layerzero": true
+  },
+  {
+    "chainKey": "memecore",
+    "chainId": 4352,
+    "layerzero": true
+  },
+  {
+    "chainKey": "subtensorevm",
+    "chainId": 964,
+    "layerzero": true
+  },
+  {
+    "chainKey": "arc",
+    "chainId": 5042,
+    "layerzero": true
+  },
+  {
+    "chainKey": "islander",
+    "chainId": 1480,
+    "layerzero": true
+  },
+  {
+    "chainKey": "apexfusionnexus",
+    "chainId": 9069,
+    "layerzero": true
+  },
+  {
+    "chainKey": "story",
+    "chainId": 1514,
+    "layerzero": true
+  },
+  {
+    "chainKey": "gensyn",
+    "chainId": 685689,
+    "layerzero": true
+  },
+  {
+    "chainKey": "lisk",
+    "chainId": 1135,
+    "layerzero": true
+  },
+  {
+    "chainKey": "redbelly",
+    "chainId": 151,
+    "layerzero": true
+  },
+  {
+    "chainKey": "injectiveevm",
+    "chainId": 1776,
+    "layerzero": true
+  },
+  {
+    "chainKey": "horizen",
+    "chainId": 26514,
+    "layerzero": true
+  },
+  {
+    "chainKey": "moca",
+    "chainId": 2288,
+    "layerzero": true
+  },
+  {
+    "chainKey": "astar",
+    "chainId": 592,
+    "layerzero": true
+  },
+  {
+    "chainKey": "zkverify",
+    "chainId": 1408,
+    "layerzero": true
+  },
+  {
+    "chainKey": "ault",
+    "chainId": 904,
+    "layerzero": true
+  },
+  {
+    "chainKey": "camp",
+    "chainId": 484,
+    "layerzero": true
+  },
+  {
+    "chainKey": "fuse",
+    "chainId": 122,
+    "layerzero": true
+  },
+  {
+    "chainKey": "glue",
+    "chainId": 1300,
+    "layerzero": true
+  },
+  {
+    "chainKey": "gravity",
+    "chainId": 1625,
+    "layerzero": true
+  },
+  {
+    "chainKey": "edu",
+    "chainId": 41923,
+    "layerzero": true
+  },
+  {
+    "chainKey": "orderly",
+    "chainId": 291,
+    "layerzero": true
+  },
+  {
+    "chainKey": "superposition",
+    "chainId": 55244,
+    "layerzero": true
+  },
+  {
+    "chainKey": "ccip-gnosis_chain-mainnet",
+    "chainId": 100,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-shibarium-mainnet",
+    "chainId": 109,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-ethereum-mainnet-hashkey-1",
+    "chainId": 177,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-binance_smart_chain-mainnet-opbnb-1",
+    "chainId": 204,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-bitcoin-mainnet-bsquared-1",
+    "chainId": 223,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-lens-mainnet",
+    "chainId": 232,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-cronos-zkevm-mainnet",
+    "chainId": 388,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-wemix-mainnet",
+    "chainId": 1111,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-metal-mainnet",
+    "chainId": 1750,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-ronin-mainnet",
+    "chainId": 2020,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-bitcoin-mainnet-botanix",
+    "chainId": 3637,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-bitcoin-merlin-mainnet",
+    "chainId": 4200,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-adi-mainnet",
+    "chainId": 36900,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-neox-mainnet",
+    "chainId": 47763,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-nexon-mainnet-henesys",
+    "chainId": 68414,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-creditcoin-mainnet",
+    "chainId": 102030,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-ethereum-mainnet-taiko-1",
+    "chainId": 167000,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-bitcoin-mainnet-bitlayer-1",
+    "chainId": 200901,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-jovay-mainnet",
+    "chainId": 5734951,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-zora-mainnet",
+    "chainId": 7777777,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-corn-mainnet",
+    "chainId": 21000000,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-ab-mainnet",
+    "chainId": 36888,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-edge-mainnet",
+    "chainId": 3343,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-gravity-mainnet",
+    "chainId": 127001,
+    "layerzero": false
+  },
+  {
+    "chainKey": "ccip-mova-mainnet-2",
+    "chainId": 61901,
+    "layerzero": false
+  }
+]

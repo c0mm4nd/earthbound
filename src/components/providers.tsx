@@ -25,7 +25,7 @@ import {
 import type { Chain } from "viem";
 import { WagmiProvider, type Config } from "wagmi";
 import { createWagmiConfig, walletChains } from "@/lib/wagmi";
-import { viemChainById } from "@/lib/viem-chains-by-id";
+import { mergeEvmChains } from "@/lib/viem-chains-by-id";
 import { loadRpcConfig, saveRpcConfig, getEffectiveRpcUrls, type RpcConfig } from "@/lib/rpc-config";
 
 type RpcConfigContextValue = {
@@ -101,18 +101,7 @@ export function Providers({
   }, []);
 
   const updateBridgeEvmChains = useCallback((chainIds: number[]) => {
-    // Look up each chainId in viemChainById, merge with walletChains (dedup by id)
-    const walletChainIds = new Set<number>(walletChains.map((c) => c.id as number));
-    const extra: Chain[] = [];
-    for (const id of chainIds) {
-      if (!walletChainIds.has(id)) {
-        const chain = viemChainById[id];
-        if (chain) {
-          extra.push(chain);
-        }
-      }
-    }
-    const merged: readonly Chain[] = [...walletChains, ...extra];
+    const merged = mergeEvmChains(walletChains, chainIds);
 
     // Bail out if the chain set hasn't changed. This prevents an infinite remount
     // loop: when WagmiProvider remounts (due to key change), BridgeApp also remounts

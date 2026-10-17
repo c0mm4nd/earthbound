@@ -26,6 +26,7 @@ import type { Chain } from "viem";
 import { createConfig, fallback, http } from "wagmi";
 import { injected } from "wagmi/connectors";
 import { type RpcConfig, getEffectiveRpcUrls } from "./rpc-config";
+import { extraEvmChains } from "./extra-evm-chains";
 
 export const walletChainByKey = {
   abstract,
@@ -42,6 +43,7 @@ export const walletChainByKey = {
   optimism,
   plasma,
   polygon,
+  ...extraEvmChains,
   scroll,
   somnia,
   soneium,
@@ -65,6 +67,7 @@ export const walletChains = [
   manta,
   metis,
   plasma,
+  ...Object.values(extraEvmChains),
   scroll,
   somnia,
   soneium,
@@ -76,18 +79,29 @@ export const walletChains = [
 export type WalletChainKey = keyof typeof walletChainByKey;
 export type SupportedChainId = (typeof walletChains)[number]["id"];
 
+const chainKeyById: Record<number, string> = Object.fromEntries(
+  Object.entries(walletChainByKey).map(([key, chain]) => [chain.id, key]),
+);
+
+// Settings and transports must use the same key for dynamically loaded chains.
+export function getEvmRpcKey(chain: Pick<Chain, "id">): string {
+  return chainKeyById[chain.id] ?? String(chain.id);
+}
+
+export function getEvmRpcUrls(chain: Chain, config: RpcConfig): readonly string[] {
+  const urls = getEffectiveRpcUrls(getEvmRpcKey(chain), config);
+  return urls.length ? urls : chain.rpcUrls.default.http;
+}
+
 export function createWagmiConfig(
   chains: readonly Chain[] = walletChains,
   rpcConfig: RpcConfig = {},
 ) {
-  const chainKeyById = Object.fromEntries(
-    Object.entries(walletChainByKey).map(([key, chain]) => [chain.id, key]),
-  );
+  const chainList = (chains.length ? chains : walletChains) as [Chain, ...Chain[]];
 
   const transports = Object.fromEntries(
-    chains.map((chain) => {
-      const chainKey = chainKeyById[chain.id];
-      const urls = chainKey ? getEffectiveRpcUrls(chainKey, rpcConfig) : [];
+    chainList.map((chain) => {
+      const urls = getEvmRpcUrls(chain, rpcConfig);
       const httpTransports = urls.map((url) => http(url));
       const transport =
         httpTransports.length > 1
@@ -96,10 +110,6 @@ export function createWagmiConfig(
       return [chain.id, transport];
     }),
   ) as Record<number, ReturnType<typeof http>>;
-
-  const chainList = chains.length > 0
-    ? (chains as [Chain, ...Chain[]])
-    : ([...walletChains] as [Chain, ...Chain[]]);
 
   return createConfig({
     chains: chainList,

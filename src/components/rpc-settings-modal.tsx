@@ -4,10 +4,9 @@ import { useState, useMemo, type FormEvent } from "react";
 import { useRpcConfig } from "@/components/providers";
 import {
   DEFAULT_RPC_URLS,
-  getEffectiveRpcUrls,
   type RpcConfig,
 } from "@/lib/rpc-config";
-import { walletChainByKey } from "@/lib/wagmi";
+import { getEvmRpcKey, getEvmRpcUrls } from "@/lib/wagmi";
 
 const FIELD_CLASS =
   "w-full rounded-[1.25rem] border border-white/10 bg-black px-3 py-2 text-xs text-white outline-none transition placeholder:text-white/35 focus:border-white/28 font-mono";
@@ -48,11 +47,6 @@ const NON_EVM_CHAIN_DISPLAY_NAMES: Record<string, string> = {
   iota: "IOTA",
 };
 
-// Reverse map: chainId → chainKey (for walletChainByKey entries)
-const chainKeyByWalletId: Record<number, string> = Object.fromEntries(
-  Object.entries(walletChainByKey).map(([key, chain]) => [chain.id, key]),
-);
-
 export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
   const { rpcConfig, updateRpcConfig, evmChains } = useRpcConfig();
 
@@ -61,9 +55,9 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
     () =>
       evmChains.map((chain) => ({
         chain,
-        key: chainKeyByWalletId[chain.id] ?? chain.id.toString(),
+        key: getEvmRpcKey(chain),
         displayName:
-          CHAIN_DISPLAY_NAMES[chainKeyByWalletId[chain.id] ?? ""] ?? chain.name,
+          CHAIN_DISPLAY_NAMES[getEvmRpcKey(chain)] ?? chain.name,
       })),
     [evmChains],
   );
@@ -141,8 +135,8 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
             </p>
             <div className="space-y-4">
               {evmChainEntries.map(({ chain, key, displayName }) => {
-                const defaults = DEFAULT_RPC_URLS[key] ?? [];
-                const effective = getEffectiveRpcUrls(key, rpcConfig);
+                const defaults = getEvmRpcUrls(chain, {});
+                const effective = getEvmRpcUrls(chain, rpcConfig);
                 const isCustomized =
                   rpcConfig[key] && rpcConfig[key]!.length > 0;
                 return (

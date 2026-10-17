@@ -4325,9 +4325,13 @@ export function BridgeApp() {
     if (!quoteRequestState.ready || !srcChain || !dstChain || !selectedSrcToken || !selectedDstToken) {
       throw new Error("Select tokens and enter a valid amount and recipient.");
     }
-    if (!supportsDirectOftRoute(srcChain.chainType, dstChain.chainType) ||
-      [srcChain, dstChain].some(chain => chain.chainType === "EVM" && !wagmiConfig.chains.some(configured => configured.id === chain.chainId))) {
-      throw new Error("Direct OFT supports configured EVM networks, Solana ↔ EVM, TON ↔ EVM, and EVM → Aptos / Starknet / Tron / Sui / Stellar. This route family is not yet supported.");
+    if (!supportsDirectOftRoute(srcChain.chainType, dstChain.chainType)) {
+      throw new Error(`Direct OFT does not yet support ${srcChain.chainType} → ${dstChain.chainType}.`);
+    }
+    const missingNetwork = [srcChain, dstChain].find(chain =>
+      chain.chainType === "EVM" && !wagmiConfig.chains.some(configured => configured.id === chain.chainId));
+    if (missingNetwork) {
+      throw new Error(`Direct OFT cannot quote ${missingNetwork.name}: wallet/RPC support for chain ${missingNetwork.chainId} has not been configured.`);
     }
     const params = new URLSearchParams({
       contractAddresses: selectedSrcToken.address,
