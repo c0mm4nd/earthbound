@@ -29,5 +29,6 @@ export interface DirectOftAdapter {
   buildSteps: (
     params: LayerZeroOftV2SendParam,
     fee: LayerZeroMessagingFee,
+    receipt: DirectOftReceipt,
   ) => Promise<TransactionUserStep[]>;
 }

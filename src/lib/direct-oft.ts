@@ -509,7 +509,7 @@ export async function buildDirectOftQuote(
           params,
           false,
         ]),
-      buildSteps: async (params, fee) => {
+      buildSteps: async (params, fee, receipt) => {
         const steps: TransactionUserStep[] = [];
         const add = (
           description: string,
@@ -530,8 +530,16 @@ export async function buildDirectOftQuote(
             functionName: "allowance",
             args: [from, address],
           });
-          if (allowance < amount) {
-            if (allowance > BigInt(0))
+          // Approve the quoted source debit, including OFT fees but excluding
+          // dust left in the wallet. Destination receipts can be smaller.
+          const approvalAmount = receipt.amountSentLD;
+          // Ethereum USDe inherits standard OpenZeppelin ERC20 approve and
+          // supports replacing a nonzero allowance. Bind this exception to the
+          // on-chain token identity, never a catalog symbol or chain label.
+          const canReplaceAllowance = chain.chainId === 1 &&
+            tokenAddress.toLowerCase() === "0x4c9edd5852cd905f086c759e8383e09bff1e68b3";
+          if (allowance < approvalAmount) {
+            if (allowance > BigInt(0) && !canReplaceAllowance)
               add(
                 "Reset OFT allowance",
                 buildCustomOftApprovalTransaction(
@@ -542,7 +550,7 @@ export async function buildDirectOftQuote(
               );
             add(
               "Approve OFT",
-              buildCustomOftApprovalTransaction(tokenAddress, address, amount),
+              buildCustomOftApprovalTransaction(tokenAddress, address, approvalAmount),
             );
           }
         }
@@ -664,7 +672,7 @@ export async function buildDirectOftQuote(
   // execution refreshes the quote, so wallet funding cannot hide a valid route.
   const userSteps = srcChain.chainType === "SOLANA" && !args.simulate
     ? []
-    : await source.buildSteps(sendParam, fee);
+    : await source.buildSteps(sendParam, fee, receipt);
   const tokenFee = receipt.amountSentLD - receipt.amountReceivedLD;
   const nativeUsd = srcChain.nativeCurrency.price?.usd;
   const tokenUsd = srcToken.price?.usd;

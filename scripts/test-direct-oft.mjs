@@ -89,6 +89,70 @@ assert.equal((await buildDirectOftQuote({ ...args, metadata: { TEST: [wrongMesh,
 await assert.rejects(buildDirectOftQuote({ ...args, amount: amount * 3n }), /transfer limits/);
 console.log("Direct OFT: amounts, fees, calldata, allowances, peers, gas, and unsupported routes passed.");
 
+// Regression: the user's full-precision USDe amount must not cause a revoke
+// when replacing an allowance, or a new approval when the actual debit fits.
+{
+  const usde = "0x4c9edd5852cd905f086c759e8383e09bff1e68b3";
+  const input = 44291571655508453914055n;
+  const debit = 44291571655000000000000n;
+  let existing = 0n;
+  let credited = debit;
+  const usdeArgs = {
+    ...args,
+    srcChain: { ...srcChain, chainId: 1 },
+    srcToken: { ...srcToken, address: usde, symbol: "USDe" },
+    amount: input,
+    metadata: { USDe: [{ endpointVersion: "v2", deployments: {
+      ethereum: { address: addr(3), innerTokenAddress: usde },
+      arbitrum: { address: addr(4), innerTokenAddress: addr(2) },
+    } }] },
+    read: async (request) => {
+      if (request.functionName === "token" && request.chain.chainKey === "ethereum") return usde;
+      if (request.functionName === "allowance") {
+        assert.equal(request.address, usde);
+        assert.deepEqual(Array.from(request.args), [addr(5), addr(3)]);
+        return existing;
+      }
+      if (request.functionName === "quoteOFT") return [
+        { minAmountLD: 1n, maxAmountLD: input * 2n }, [],
+        { amountSentLD: debit, amountReceivedLD: credited },
+      ];
+      if (request.functionName === "quoteSend") return { nativeFee: 100n, lzTokenFee: 0n };
+      return read(request);
+    },
+  };
+  for (existing of [0n, 1n, debit - 1n]) {
+    const result = await buildDirectOftQuote(usdeArgs);
+    assert.equal(result.userSteps.length, 2, "USDe needs one approval and one send, without revoke");
+    const approval = result.userSteps[0].transaction.encoded;
+    const decodedApproval = decodeFunctionData({ abi: erc20Abi, data: approval.data });
+    assert.equal(approval.to, usde);
+    assert.equal(decodedApproval.functionName, "approve");
+    assert.equal(decodedApproval.args[0].toLowerCase(), addr(3));
+    assert.equal(decodedApproval.args[1], debit, "exclude unspent dust from approval");
+    const send = decodeFunctionData({ abi: layerZeroOftV2Abi, data: result.userSteps[1].transaction.encoded.data });
+    assert.equal(send.args[0].amountLD, input, "preserve the quoted send parameters");
+    assert.equal(send.args[0].minAmountLD, debit);
+    assert.equal(result.dstAmount, "44291571655");
+  }
+  for (existing of [debit, debit + 1n, input, 2n ** 256n - 1n]) {
+    assert.equal((await buildDirectOftQuote(usdeArgs)).userSteps.length, 1,
+      "an allowance covering the source debit needs no approval, even below the input");
+  }
+  existing = debit - 1n;
+  credited = debit - 1000000000000n;
+  const feeResult = await buildDirectOftQuote(usdeArgs);
+  assert.equal(decodeFunctionData({ abi: erc20Abi, data: feeResult.userSteps[0].transaction.encoded.data }).args[1], debit,
+    "approval must cover source fees, not just the received amount");
+  assert.equal((await buildDirectOftQuote({ ...usdeArgs, srcChain: { ...usdeArgs.srcChain, chainId: 10 } })).userSteps.length, 3,
+    "the same token address on another chain must retain reset compatibility");
+  allowance = 1n;
+  assert.equal((await buildDirectOftQuote({ ...args, srcChain: { ...srcChain, chainId: 1 }, srcToken: { ...srcToken, symbol: "USDe" } })).userSteps.length, 3,
+    "a matching symbol must not bypass reset compatibility for other tokens");
+  allowance = amount;
+  console.log("USDe approval: nonzero replacement, exact debit, dust, sufficient allowance, source fees and identity guards passed.");
+}
+
 // Opt-in mainnet reads only. No wallet, signing, approvals, or sends.
 if (process.env.LIVE_OFT_SMOKE === "1") {
   const srcAddress = "0xdac17f958d2ee523a2206206994597c13d831ec7";
