@@ -28,6 +28,8 @@
 }
 
 html {
+  /* Scale rem-based typography, controls, icons, and spacing together. */
+  font-size: 87.5%;
   scroll-behavior: smooth;
   background:
     radial-gradient(circle at top, rgba(255, 255, 255, 0.12), transparent 34%),
@@ -38,7 +40,7 @@ html {
 body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), sans-serif;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.5;
   min-height: 100vh;
   background:
@@ -83,7 +85,7 @@ input::placeholder {
   .bridge-shell { height: 100dvh; overflow: hidden; }
   .bridge-layout { height: 100%; min-height: 0; }
   .bridge-layout > header { flex-shrink: 0; }
-  .bridge-main { min-height: 0; grid-template-columns: minmax(0, 1fr) clamp(19rem, 25vw, 34rem); }
+  .bridge-main { min-height: 0; grid-template-columns: minmax(0, 1fr) clamp(19rem, 22vw, 30rem); }
   .bridge-route-panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bridge-sidebar { grid-template-rows: minmax(0, 0.9fr) minmax(0, 1.1fr); }
   .wallet-option-list { min-height: 0; max-height: none; }

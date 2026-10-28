@@ -7,6 +7,7 @@ import {
   type RpcConfig,
 } from "@/lib/rpc-config";
 import { getEvmRpcKey, getEvmRpcUrls } from "@/lib/wagmi";
+import { DEFAULT_QUOTE_SETTINGS, parseSlippagePercent, type QuoteSettings } from "@/lib/quote-settings";
 
 const FIELD_CLASS =
   "w-full rounded-[1.25rem] border border-white/10 bg-black px-3 py-2 text-xs text-white outline-none transition placeholder:text-white/35 focus:border-white/28 font-mono";
@@ -47,8 +48,16 @@ const NON_EVM_CHAIN_DISPLAY_NAMES: Record<string, string> = {
   iota: "IOTA",
 };
 
-export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
+export function RpcSettingsModal({ onClose, quoteSettings, onApplyQuoteSettings, executionRunning }: {
+  onClose: () => void;
+  quoteSettings: QuoteSettings;
+  onApplyQuoteSettings: (settings: QuoteSettings) => void;
+  executionRunning: boolean;
+}) {
   const { rpcConfig, updateRpcConfig, evmChains } = useRpcConfig();
+  const [useApiRoutes, setUseApiRoutes] = useState(quoteSettings.useApiRoutes);
+  const [slippage, setSlippage] = useState(quoteSettings.maxSlippageBps === null ? "" : String(quoteSettings.maxSlippageBps / 100));
+  const [error, setError] = useState<string | null>(null);
 
   // Derive a stable key for each EVM chain: use walletChainByKey key if known, else chain.id.toString()
   const evmChainEntries = useMemo(
@@ -78,6 +87,10 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (executionRunning) return;
+    let maxSlippageBps: number | null;
+    try { maxSlippageBps = parseSlippagePercent(slippage); }
+    catch (error) { setError(error instanceof Error ? error.message : "Invalid slippage."); return; }
     const next: RpcConfig = {};
     for (const key of allKeys) {
       const urls = drafts[key]
@@ -88,7 +101,11 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
         next[key] = urls;
       }
     }
-    updateRpcConfig(next);
+    onApplyQuoteSettings({ useApiRoutes, maxSlippageBps });
+    // Quote-only changes must preserve the current route, amount, and loaded quotes.
+    const rpcChanged = Object.keys({ ...rpcConfig, ...next }).some(key =>
+      JSON.stringify(rpcConfig[key] ?? []) !== JSON.stringify(next[key] ?? []));
+    if (rpcChanged) updateRpcConfig(next);
     onClose();
   }
 
@@ -98,30 +115,32 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
       cleared[key] = "";
     }
     setDrafts(cleared);
+    setUseApiRoutes(DEFAULT_QUOTE_SETTINGS.useApiRoutes);
+    setSlippage("");
+    setError(null);
   }
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
+      <div role="dialog" aria-modal="true" aria-labelledby="bridge-settings-title" className="flex max-h-[90vh] w-full max-w-xl flex-col rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         {/* Header */}
         <div className="flex items-start justify-between gap-4 p-5 pb-4">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
-              EVM · Solana · SUI · IOTA
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+              Quotes · RPC
             </p>
-            <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">
-              RPC Configuration
+            <h2 id="bridge-settings-title" className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">
+              Settings
             </h2>
             <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-              One URL per line. EVM chains use all URLs as fallbacks; non-EVM chains use only the first.
-              Leave blank to use built-in public defaults. Changes take effect immediately.
+              Quote preferences and network connections. Changes take effect when you apply.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className={ICON_BUTTON_CLASS}
-            aria-label="Close RPC configuration dialog"
+            aria-label="Close settings"
           >
             <XIcon />
           </button>
@@ -130,7 +149,27 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
         {/* Scrollable chain list */}
         <form onSubmit={handleSubmit} className="flex min-h-0 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-2">
-            <p className="mb-3 text-[9px] font-semibold uppercase tracking-[0.24em] text-white/30">
+            <fieldset disabled={executionRunning} className="mb-5 space-y-3 border-b border-white/10 pb-5">
+              <legend className="mb-3 text-xs font-medium">Quotes</legend>
+              <label className="flex items-center justify-between gap-3 text-xs">
+                Get quotes from third parties
+                <input type="checkbox" checked={useApiRoutes} onChange={event => setUseApiRoutes(event.target.checked)} className="h-4 w-4 accent-white" />
+              </label>
+              <p className="text-xs text-[var(--muted)]">Provider fees may apply. CCIP and CCTP are queried independently of this option.</p>
+              <label className="block space-y-1.5 text-xs">
+                <span>Max quote slippage (%)</span>
+                <input type="number" min="0" max="100" step="0.01" inputMode="decimal" placeholder="No limit" value={slippage}
+                  onChange={event => { setSlippage(event.target.value); setError(null); }} className={FIELD_CLASS} />
+              </label>
+              <div className="flex gap-2">
+                {["0.1", "0.5", "1"].map(value => <button key={value} type="button" onClick={() => { setSlippage(value); setError(null); }} className={GHOST_BUTTON_CLASS}>{value}%</button>)}
+                <button type="button" onClick={() => { setSlippage(""); setError(null); }} className={GHOST_BUTTON_CLASS}>No limit</button>
+              </div>
+              <p className="text-xs text-[var(--muted)]">(Estimated receive − minimum receive) / estimated receive. Gas is excluded. Leave blank to show all quotes; with a limit, quotes without a minimum receive are hidden.</p>
+              {error ? <p role="alert" className="text-xs text-red-300">{error}</p> : null}
+            </fieldset>
+            <p className="mb-3 text-xs text-[var(--muted)]">RPC: one URL per line. EVM uses all URLs as fallbacks; other networks use the first. Leave blank for defaults.</p>
+            <p className="mb-3 text-[0.5625rem] font-semibold uppercase tracking-[0.24em] text-white/30">
               EVM · Multiple fallbacks
             </p>
             <div className="space-y-4">
@@ -142,15 +181,15 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
                 return (
                   <label key={chain.id} className="block space-y-1.5">
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                      <span className="text-[0.625rem] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
                         {displayName}
                       </span>
                       {isCustomized ? (
-                        <span className="rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.2em] text-white/50">
+                        <span className="rounded-full border border-white/10 px-1.5 py-0.5 text-[0.5rem] font-semibold uppercase tracking-[0.2em] text-white/50">
                           Custom
                         </span>
                       ) : defaults.length > 0 ? (
-                        <span className="rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.2em] text-white/30">
+                        <span className="rounded-full border border-white/10 px-1.5 py-0.5 text-[0.5rem] font-semibold uppercase tracking-[0.2em] text-white/30">
                           {effective.length} fallback{effective.length !== 1 ? "s" : ""}
                         </span>
                       ) : null}
@@ -174,7 +213,7 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
               })}
             </div>
 
-            <p className="mb-3 mt-6 text-[9px] font-semibold uppercase tracking-[0.24em] text-white/30">
+            <p className="mb-3 mt-6 text-[0.5625rem] font-semibold uppercase tracking-[0.24em] text-white/30">
               Non-EVM · First URL used
             </p>
             <div className="space-y-4">
@@ -185,11 +224,11 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
                 return (
                   <label key={chainKey} className="block space-y-1.5">
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                      <span className="text-[0.625rem] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
                         {NON_EVM_CHAIN_DISPLAY_NAMES[chainKey] ?? chainKey}
                       </span>
                       {isCustomized ? (
-                        <span className="rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.2em] text-white/50">
+                        <span className="rounded-full border border-white/10 px-1.5 py-0.5 text-[0.5rem] font-semibold uppercase tracking-[0.2em] text-white/50">
                           Custom
                         </span>
                       ) : null}
@@ -223,7 +262,7 @@ export function RpcSettingsModal({ onClose }: { onClose: () => void }) {
               <button type="button" onClick={onClose} className={GHOST_BUTTON_CLASS}>
                 Cancel
               </button>
-              <button type="submit" className={PRIMARY_BUTTON_CLASS}>
+              <button type="submit" disabled={executionRunning} className={`${PRIMARY_BUTTON_CLASS} disabled:opacity-50`}>
                 Apply
               </button>
             </div>

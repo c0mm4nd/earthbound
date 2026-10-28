@@ -136,6 +136,7 @@ export interface BridgeQuote {
     maxNativeFee: string;
     quotedAt: number;
   };
+  // Shared execution-refresh guard for direct OFT and Stargate V2/Hydra routes.
   directOft?: { meshKey: string; nativeFee: string };
   id: string;
   feeUsd?: string;

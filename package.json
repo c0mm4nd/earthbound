@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test:chains": "node scripts/test-evm-chain-coverage.mjs && node scripts/test-robinhood-oft.mjs",
+    "test:stargate": "node --test scripts/test-direct-stargate.mjs",
     "test:cctp": "node --test scripts/test-cctp.mjs scripts/test-cctp-execution.mjs scripts/test-cctp-bridge.mjs scripts/test-cctp-solana.mjs scripts/test-cctp-aptos.mjs scripts/test-cctp-sui.mjs scripts/test-cctp-starknet.mjs scripts/test-cctp-stellar.mjs scripts/test-cctp-solana-execution.mjs scripts/test-cctp-aptos-execution.mjs scripts/test-cctp-sui-execution.mjs scripts/test-cctp-starknet-execution.mjs scripts/test-cctp-stellar-execution.mjs scripts/test-cctp-native-lifecycle.mjs scripts/test-cctp-native-app.mjs scripts/test-cctp-native-service.mjs",
     "test:ccip": "node --test scripts/test-ccip.mjs scripts/test-ccip-execution.mjs scripts/test-ccip-solana.mjs scripts/test-ccip-aptos.mjs scripts/test-ccip-canton.mjs scripts/test-ccip-native.mjs scripts/test-ccip-wrapped-native.mjs",
     "test:ccip:solana": "node scripts/test-ccip-solana.mjs",

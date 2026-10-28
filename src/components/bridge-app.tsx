@@ -78,6 +78,7 @@ import { supportsCctpPair, cctpNativeTransferKey, cctpAccountEqual, CCTP_CHAINS 
 import type { CctpNativeTransfer } from "@/lib/cctp-native-lifecycle";
 import { claimCctpTransfer, initiateCctpTransfer, monitorCctpTransfer } from "@/lib/cctp-lifecycle";
 import { buildDirectOftQuote, supportsDirectOftRoute } from "@/lib/direct-oft";
+import { findStargateRoute } from "@/lib/stargate-deployments";
 import { useBridgeWallets } from "@/lib/bridge-wallet-hooks";
 import { checkSolanaSubmission, fetchExternalWalletBalance } from "@/lib/bridge-wallets";
 import {
@@ -95,6 +96,7 @@ import {
 } from "@/lib/wagmi";
 import { useRpcConfig } from "@/components/providers";
 import { RpcSettingsModal } from "@/components/rpc-settings-modal";
+import { DEFAULT_QUOTE_SETTINGS, QUOTE_SETTINGS_KEY, parseQuoteSettings, passesQuoteSlippage, formatQuoteSlippage, type QuoteSettings } from "@/lib/quote-settings";
 import { WalletManagerModal } from "@/components/wallet-manager-modal";
 import { ToggleSwitch } from "@/components/toggle-switch";
 import { WALLET_NETWORKS, type WalletNetwork } from "@/lib/wallet-options";
@@ -1177,6 +1179,7 @@ function getQuoteRouteKey(quote: BridgeQuote) {
 function formatRouteType(type: string) {
   const labels: Record<string, string> = {
     DIRECT_OFT: "Direct transfer",
+    DIRECT_STARGATE_V2: "Stargate direct transfer",
     CCIP: "CCIP",
     CCTP_FAST: "Circle CCTP · Fast",
     CCTP_STANDARD: "Circle CCTP · Standard",
@@ -1557,7 +1560,7 @@ function SectionHeading({
 }) {
   return (
     <div className={compact ? "min-w-0 space-y-0.5" : "min-w-0 space-y-2"}>
-      <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
+      <p className="text-[0.625rem] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
         {eyebrow}
       </p>
       <h2 className={`font-medium tracking-[-0.03em] text-white ${compact ? "text-sm" : "text-lg"}`}>{title}</h2>
@@ -1632,9 +1635,9 @@ function InlineOptionList({
   const showBlockingLoader = Boolean(loadingLabel && !items.length && !normalizedQuery);
 
   return (
-    <div className="wallet-option-list flex min-h-0 min-w-0 flex-col gap-2">
+    <div className="wallet-option-list flex min-h-0 min-w-0 flex-col gap-1.5">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
           {title}
         </p>
       </div>
@@ -1643,11 +1646,12 @@ function InlineOptionList({
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         placeholder={`Search ${title.toLowerCase()}`}
-        className={`${FIELD_CLASS} h-10 px-3 py-2 text-xs`}
+        aria-label={`Search ${title.toLowerCase()}`}
+        className={`${FIELD_CLASS} h-8 rounded-xl px-2.5 py-1.5 text-xs`}
       />
 
       {loadingLabel && hasVisibleItems ? (
-        <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--muted)]">
+        <p className="text-[0.625rem] font-medium uppercase tracking-[0.22em] text-[var(--muted)]">
           {loadingLabel}
         </p>
       ) : null}
@@ -1657,13 +1661,14 @@ function InlineOptionList({
           {loadingLabel}
         </div>
       ) : hasVisibleItems ? (
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
           {filteredItems.map((item) => (
             <button
               key={item.key}
               type="button"
               onClick={item.onSelect}
-              className={`flex w-full items-center gap-2.5 rounded-[1.2rem] border px-3 py-2.5 text-left transition ${
+              aria-pressed={item.selected}
+              className={`flex w-full items-center gap-2 rounded-xl border px-2.5 py-1.5 text-left transition ${
                 item.selected
                   ? "border-white bg-white text-black"
                   : "border-white/10 bg-black text-white hover:border-white/24 hover:bg-white/[0.04]"
@@ -1677,10 +1682,10 @@ function InlineOptionList({
                 size="sm"
               />
               <span className="min-w-0">
-                <span className="block truncate text-sm font-medium">{item.title}</span>
+                <span className="block truncate text-xs leading-4 font-medium">{item.title}</span>
                 {item.subtitle ? (
                   <span
-                    className={`mt-0.5 block truncate text-xs ${
+                    className={`block truncate text-[0.6875rem] leading-[0.875rem] ${
                       item.selected ? "text-black/66" : "text-[var(--muted)]"
                     }`}
                   >
@@ -1689,7 +1694,7 @@ function InlineOptionList({
                 ) : null}
                 {item.meta ? (
                   <span
-                    className={`mt-1 block text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                    className={`block text-[0.625rem] leading-[0.875rem] font-semibold uppercase tracking-[0.04em] ${
                       item.selected ? "text-black/72" : "text-[var(--muted)]"
                     }`}
                   >
@@ -1727,7 +1732,7 @@ function LayerZeroApiKeyModal({
       <div className="w-full max-w-md rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
               LayerZero
             </p>
             <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">
@@ -1751,7 +1756,7 @@ function LayerZeroApiKeyModal({
 
         <form onSubmit={onSubmit} className="mt-5 space-y-3">
           <label className="block space-y-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+            <span className="text-[0.625rem] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
               API Key
             </span>
             <input
@@ -1802,7 +1807,7 @@ function CustomOftConfigModal({
       <div className="w-full max-w-4xl rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
               Custom OFT
             </p>
             <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">
@@ -1826,7 +1831,7 @@ function CustomOftConfigModal({
 
         <form onSubmit={onSubmit} className="mt-5 space-y-3">
           <div className="rounded-[1.25rem] border border-white/10 bg-black/60 p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
               JSON payload
             </p>
             <p className="mt-1 text-sm text-[var(--muted)]">
@@ -1980,7 +1985,7 @@ function OftDiscoveryModal({
       <div className="flex h-[min(52rem,calc(100vh-2rem))] w-full max-w-4xl flex-col rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
               Discover OFT
             </p>
             <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">
@@ -2102,7 +2107,7 @@ function OftDiscoveryModal({
                           <p className="font-medium text-white">
                             {chainByKey.get(deployment.chainKey)?.name ?? deployment.chainKey}
                           </p>
-                          <p className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[var(--muted)]">
+                          <p className="mt-1 text-[0.625rem] uppercase tracking-[0.18em] text-[var(--muted)]">
                             {deployment.chainKey} ·{" "}
                             {getChainTypeDisplayLabel(
                               chainByKey.get(deployment.chainKey)?.chainType,
@@ -2163,7 +2168,7 @@ function CustomOftSetupModal({
       <div className="w-full max-w-lg rounded-[1.6rem] border border-white/12 bg-[var(--overlay-surface)] p-5 shadow-[0_32px_90px_rgba(0,0,0,0.55)]">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
               Local Build
             </p>
             <h2 className="mt-2 text-lg font-medium tracking-[-0.03em] text-white">Custom OFT</h2>
@@ -2184,7 +2189,7 @@ function CustomOftSetupModal({
 
         {configs.length > 0 ? (
           <div className="mt-4 space-y-2">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
               Saved configs
             </p>
             <select
@@ -2221,7 +2226,7 @@ function CustomOftSetupModal({
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
               LayerZero Metadata
             </p>
             <p className="mt-2 text-sm text-[var(--muted)]">
@@ -2232,7 +2237,7 @@ function CustomOftSetupModal({
             </button>
           </div>
           <div className="rounded-[1.25rem] border border-white/10 bg-black/70 p-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
               Manual JSON
             </p>
             <p className="mt-2 text-sm text-[var(--muted)]">
@@ -2277,7 +2282,17 @@ function CustomOftSetupModal({
 
 export function BridgeApp() {
   const queryClient = useQueryClient();
-  const [useApiRoutes, setUseApiRoutes] = useState(false);
+  const [quoteSettings, setQuoteSettings] = useState<QuoteSettings>(DEFAULT_QUOTE_SETTINGS);
+  const { useApiRoutes, maxSlippageBps } = quoteSettings;
+  useEffect(() => {
+    try { setQuoteSettings(parseQuoteSettings(localStorage.getItem(QUOTE_SETTINGS_KEY))); } catch { /* Use defaults when storage is unavailable. */ }
+  }, []);
+  function applyQuoteSettings(next: QuoteSettings) {
+    if (executionLockRef.current) return;
+    setQuoteSettings(next);
+    try { localStorage.setItem(QUOTE_SETTINGS_KEY, JSON.stringify(next)); }
+    catch { pushExecutionNotification({ tone: "neutral", title: "Settings applied", message: "Browser storage is unavailable. These settings apply only to this tab." }); }
+  }
   const { wagmiConfig, rpcConfig, updateBridgeEvmChains } = useRpcConfig();
   const [isRpcSettingsOpen, setIsRpcSettingsOpen] = useState(false);
   const [isWalletManagerOpen, setIsWalletManagerOpen] = useState(false);
@@ -2304,7 +2319,7 @@ export function BridgeApp() {
   const [dstTokenAddress, setDstTokenAddress] = useState("");
   const [thirdPartyRecipient, setThirdPartyRecipient] = useState<{ chainKey: string; address: string } | null>(null);
   const [amountInput, setAmountInput] = useState("");
-  const [quotes, setQuotes] = useState<BridgeQuote[]>([]);
+  const [allQuotes, setQuotes] = useState<BridgeQuote[]>([]);
   const [quotedRequestKey, setQuotedRequestKey] = useState("");
   const [selectedQuoteRouteKey, setSelectedQuoteRouteKey] = useState<string | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
@@ -3057,6 +3072,12 @@ export function BridgeApp() {
     ? JSON.stringify([useApiRoutes, quoteRequestState.payload])
     : "";
 
+  const quotes = useMemo(() => allQuotes.filter(candidate => passesQuoteSlippage(candidate, maxSlippageBps)), [allQuotes, maxSlippageBps]);
+  const filteredQuoteCount = quotedRequestKey === quoteRequestKey ? allQuotes.length - quotes.length : 0;
+  useEffect(() => {
+    setSelectedQuoteRouteKey(current => current && quotes.some(candidate => getQuoteRouteKey(candidate) === current)
+      ? current : quotes[0] ? getQuoteRouteKey(quotes[0]) : null);
+  }, [quotes]);
   const quote = useMemo(() => {
     if (!quotes.length || quotedRequestKey !== quoteRequestKey) {
       return null;
@@ -4337,7 +4358,7 @@ export function BridgeApp() {
       contractAddresses: selectedSrcToken.address,
       chainNames: `${srcChain.chainKey},${dstChain.chainKey}`,
     });
-    const metadata = await queryClient.fetchQuery({
+    const metadata = findStargateRoute(srcChain, dstChain, selectedSrcToken, selectedDstToken) ? {} : await queryClient.fetchQuery({
       queryKey: ["bridge", "direct-oft-metadata", params.toString()],
       queryFn: () => fetchJson<LayerZeroOftListResponse>(`/api/bridge/oft-list?${params}`),
       staleTime: 60_000,
@@ -4776,7 +4797,7 @@ export function BridgeApp() {
         void nativeBalanceQuery.refetch();
         return;
       }
-      const isDirectOft = quote.routeSteps.some((step) => step.type === "DIRECT_OFT");
+      const isDirectOft = quote.routeSteps.some((step) => step.type === "DIRECT_OFT" || step.type === "DIRECT_STARGATE_V2");
       const refreshDirectQuote = async () => {
         assertCurrentExecutionContext();
         const fresh = await requestDirectQuote(true);
@@ -4784,7 +4805,7 @@ export function BridgeApp() {
             BigInt(fresh.dstAmount) < BigInt(quote.dstAmountMin ?? quote.dstAmount) ||
             BigInt(fresh.directOft.nativeFee) > BigInt(quote.directOft.nativeFee) ||
             fresh.directOft.meshKey !== quote.directOft.meshKey) {
-          throw new Error("Direct OFT quote changed. Refresh and review the new quote before sending.");
+          throw new Error("Direct transfer quote changed. Refresh and review the new quote before sending.");
         }
         return fresh;
       };
@@ -4996,7 +5017,7 @@ export function BridgeApp() {
           phase: "success", txHash: lastTxHash, transferStatus: "SOURCE_CONFIRMED", explorerUrl,
           currentStep: "Source transaction confirmed. Track destination settlement on LayerZeroScan.",
         });
-        pushExecutionNotification({ tone: "success", title: "Direct OFT submitted", message: "Track destination settlement on LayerZeroScan." });
+        pushExecutionNotification({ tone: "success", title: "Direct transfer submitted", message: "Track destination settlement on LayerZeroScan." });
         void erc20BalanceQuery.refetch();
         return;
       }
@@ -5452,11 +5473,6 @@ export function BridgeApp() {
       ? formatTokenAmount(quote.dstAmount, selectedDstToken.decimals)
       : "0.00";
   const customOftDestinationPreviewAmount = amountInput.trim() || "0.00";
-  const receiveAmount = quote?.provider === "ccip" ? quote.dstAmount : quote?.dstAmountMin;
-  const minimumReceiveCopy =
-    selectedDstToken && receiveAmount
-      ? `${formatTokenAmount(receiveAmount, selectedDstToken.decimals)} ${selectedDstTokenSymbol}`
-      : null;
   const refreshCountdownSeconds =
     canRequestQuote && lastQuoteUpdatedAt
       ? Math.max(0, Math.ceil((lastQuoteUpdatedAt + 10_000 - refreshCountdownNow) / 1_000))
@@ -5536,11 +5552,11 @@ export function BridgeApp() {
       <div className="pointer-events-none absolute inset-x-0 top-0 h-56 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.14),transparent_55%)]" />
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,transparent,rgba(255,255,255,0.025)_40%,transparent)]" />
 
-      <div className="bridge-layout relative z-10 flex min-h-dvh w-full flex-col gap-3 p-3 sm:p-4">
+      <div className="bridge-layout relative z-10 flex min-h-dvh w-full flex-col gap-2 p-2 sm:p-3">
         <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2 backdrop-blur">
           <div className="flex min-w-0 items-center gap-2 whitespace-nowrap">
             <h1 className="text-sm font-semibold tracking-tight text-white">Earthbound</h1>
-            <span className="text-[11px] text-[var(--muted)]">Powered by</span>
+            <span className="text-[0.6875rem] text-[var(--muted)]">Powered by</span>
             <a
               href="https://web3resear.ch"
               target="_blank"
@@ -5566,8 +5582,8 @@ export function BridgeApp() {
               type="button"
               onClick={() => setIsRpcSettingsOpen(true)}
               className={ICON_BUTTON_CLASS}
-              aria-label="Configure RPC endpoints"
-              title="Configure RPC endpoints"
+              aria-label="Open settings"
+              title="Settings"
             >
               <SettingsIcon />
             </button>
@@ -5585,12 +5601,12 @@ export function BridgeApp() {
           </div>
         </header>
 
-        <main className="bridge-main grid min-w-0 flex-1 gap-3">
+        <main className="bridge-main grid min-w-0 flex-1 gap-2">
           <section
             id="transfer"
-            className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-4 shadow-[0_30px_100px_rgba(0,0,0,0.32)] backdrop-blur sm:p-4"
+            className="grid min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] rounded-[1.75rem] border border-white/10 bg-[var(--panel)] p-3 shadow-[0_30px_100px_rgba(0,0,0,0.32)] backdrop-blur sm:p-3"
           >
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-2">
               <div className="flex items-center gap-3">
                 <StatusPill tone="neutral">Bridge</StatusPill>
                 <p className="text-sm font-medium text-white">Transfer</p>
@@ -5621,41 +5637,41 @@ export function BridgeApp() {
               </div>
             </div>
 
-            <div className="bridge-route-panels mt-3 grid min-h-0 min-w-0 gap-3">
+            <div className="bridge-route-panels mt-2 grid min-h-0 min-w-0 gap-2">
                   <div
-                    className={`${SURFACE_CARD_CLASS} grid min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] p-4`}
+                    className={`${SURFACE_CARD_CLASS} grid min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] p-3`}
                   >
                     <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
+                        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
                           From
                         </p>
                         <p className="mt-1 text-sm font-medium text-white">Origin</p>
                       </div>
 
-                      <label className="block min-w-0 w-full max-w-[24rem] space-y-2">
-                        <span className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
+                      <label className="block min-w-0 w-full max-w-[24rem] space-y-1">
+                        <span className="text-[0.6875rem] font-semibold uppercase tracking-[0.28em] text-[var(--muted)]">
                           Amount
                         </span>
-                        <div className="rounded-[1.25rem] border border-white/10 bg-black px-4 py-3">
+                        <div className="rounded-[1.25rem] border border-white/10 bg-black px-3 py-2">
                           <div className="flex items-center gap-3">
                             <input
                               inputMode="decimal"
                               placeholder="0.00"
                               value={amountInput}
                               onChange={(event) => setAmountInput(event.target.value)}
-                              className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-[1.7rem] font-medium tracking-[-0.05em] text-white outline-none placeholder:text-white/35"
+                              className="min-w-0 flex-1 border-0 bg-transparent px-0 py-0 text-xl font-medium tracking-[-0.05em] text-white outline-none placeholder:text-white/35"
                             />
                             <button
                               type="button"
                               onClick={handleFillMax}
                               disabled={!canFillMax}
-                              className="shrink-0 rounded-full border border-white/10 px-3 py-1.5 text-[11px] font-medium text-white/72 transition hover:border-white/24 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                              className="shrink-0 rounded-full border border-white/10 px-3 py-1.5 text-[0.6875rem] font-medium text-white/72 transition hover:border-white/24 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               Max
                             </button>
                           </div>
-                          <p className="mt-2 text-xs text-[var(--muted)]">
+                          <p className="mt-1 text-xs text-[var(--muted)]">
                             <span className="mr-1">Balance</span>
                             {selectedSrcToken ? (
                               <InlineAssetLabel
@@ -5672,7 +5688,7 @@ export function BridgeApp() {
                       </label>
                     </div>
 
-                    <div className="mt-3 grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="mt-2 grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
                       <InlineOptionList
                         title="Chain"
                         items={srcChainItems}
@@ -5690,11 +5706,11 @@ export function BridgeApp() {
                   </div>
 
                   <div
-                    className={`${SURFACE_CARD_CLASS} grid min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] p-4`}
+                    className={`${SURFACE_CARD_CLASS} grid min-h-0 min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] p-3`}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
+                        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.3em] text-[var(--muted-strong)]">
                           To
                         </p>
                         <p className="mt-1 text-sm font-medium text-white">Destination</p>
@@ -5702,7 +5718,7 @@ export function BridgeApp() {
                       <div className="min-w-0 text-right">
                         <div className="flex items-center justify-end gap-1 text-[var(--muted)]">
                           <ArrowDownIcon className="h-2.5 w-2.5" />
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.28em]">Receive</p>
+                          <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.28em]">Receive</p>
                         </div>
                         <p className="mt-1 truncate text-lg font-medium tracking-[-0.04em] text-white">
                           {isCustomOftSource ? customOftDestinationPreviewAmount : destinationPreviewAmount}
@@ -5718,7 +5734,7 @@ export function BridgeApp() {
                       </div>
                     </div>
 
-                    <div className="mt-3 grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="mt-2 grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
                       <InlineOptionList
                         title="Chain"
                         items={isCustomOftSource ? customOftDstChainItems : dstChainItems}
@@ -5740,7 +5756,7 @@ export function BridgeApp() {
                   <div className="mt-3 rounded-[1.25rem] border border-white/18 bg-white/[0.04] px-4 py-3 text-sm text-white">
                     <p>{quoteError ?? providerNoticeCopy ?? executionCapabilityCopy}</p>
                     {!useApiRoutes && quoteError?.includes("Enable API routes") ? (
-                      <button type="button" onClick={() => setUseApiRoutes(true)} className="mt-2 rounded-full border border-white/20 px-3 py-2 text-xs hover:bg-white/10">Get quotes from third parties (provider fees may apply)</button>
+                      <button type="button" onClick={() => setIsRpcSettingsOpen(true)} className="mt-2 rounded-full border border-white/20 px-3 py-2 text-xs hover:bg-white/10">Open settings to enable third-party quotes</button>
                     ) : null}
                   </div>
                 ) : null}
@@ -5758,12 +5774,10 @@ export function BridgeApp() {
                   <p key={warning} role="status" className="mt-2 text-xs text-amber-200/80">{warning}</p>
                 ))}
 
-                <div className="mt-3 grid gap-3 rounded-[1.15rem] border border-white/10 bg-white/[0.03] px-3 py-2.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="grid gap-2.5 lg:grid-cols-[minmax(0,1.45fr)_minmax(12rem,0.8fr)]">
-                      <div className="block space-y-1.5">
+                <div className="bridge-transfer-footer mt-2 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-3 gap-y-2 rounded-[1.15rem] border border-white/10 bg-white/[0.03] px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+                  <div className="col-span-full min-w-0 space-y-1 sm:col-span-1">
                         <span className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
+                          <span className="text-[0.625rem] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
                             Destination address
                           </span>
                           <button
@@ -5785,61 +5799,18 @@ export function BridgeApp() {
                           value={destinationAddress}
                           readOnly={!useThirdPartyRecipient}
                           onChange={(event) => { if (activeDstChain && useThirdPartyRecipient) setThirdPartyRecipient({ chainKey: activeDstChain.chainKey, address: event.target.value.trim() }); }}
-                          className={`${FIELD_CLASS} h-10 rounded-[1.05rem] px-3 py-2 text-xs`}
+                          className={`${FIELD_CLASS} h-9 rounded-[1.05rem] px-3 py-2 text-xs`}
                         />
+                  </div>
                         <ToggleSwitch
+                          className="max-w-[12rem] sm:max-w-none"
                           checked={useThirdPartyRecipient}
                           disabled={!activeDstChain}
                           onCheckedChange={(checked) => setThirdPartyRecipient(checked && activeDstChain ? { chainKey: activeDstChain.chainKey, address: "" } : null)}
                         >
                           Send to a third-party address
                         </ToggleSwitch>
-                        {!useThirdPartyRecipient && activeDstChain && !hasPreferredDestinationWalletAddress ? <p className="text-xs text-amber-200/80">{destinationRecipientCopy}</p> : null}
-                      </div>
-
-                      <div className="rounded-[1.05rem] border border-white/10 bg-black px-3 py-2.5">
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--muted)]">
-                          {isCustomOftSource ? "Receive" : quote?.provider === "ccip" ? "Est. receive" : "Min receive"}
-                        </p>
-                        <p className="mt-1.5 text-xs text-white">
-                          {isCustomOftSource ? (
-                            customOftDestinationToken ? (
-                              <InlineAssetLabel
-                                label={customOftDestinationTokenSymbol}
-                                src={customOftDestinationTokenIconUrl}
-                              >
-                                {customOftDestinationPreviewAmount} {customOftDestinationTokenSymbol}
-                              </InlineAssetLabel>
-                            ) : (
-                              "Select destination chain"
-                            )
-                          ) : selectedDstToken ? (
-                            <InlineAssetLabel
-                              label={selectedDstTokenSymbol}
-                              src={selectedDstTokenIconUrl}
-                            >
-                              {minimumReceiveCopy ?? "Awaiting quote"}
-                            </InlineAssetLabel>
-                          ) : (
-                            minimumReceiveCopy ?? "Awaiting quote"
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-                  {!isCustomOftSource ? (
-                    <ToggleSwitch
-                      className="basis-48 flex-1"
-                      checked={useApiRoutes}
-                      disabled={executionState.phase === "running"}
-                      onCheckedChange={setUseApiRoutes}
-                    >
-                      <span>Get quotes from third parties <span className="text-[var(--muted-strong)]">(CCIP and CCTP always included)</span></span>
-                    </ToggleSwitch>
-                  ) : null}
-                  <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+                  <div className="flex shrink-0 items-center gap-2">
                     {isCustomOftSource ? (
                       <button
                         type="button"
@@ -5874,7 +5845,7 @@ export function BridgeApp() {
                       <span>{executionState.phase === "running" ? "Executing..." : "Execute"}</span>
                     </button>
                   </div>
-                  </div>
+                  {!useThirdPartyRecipient && activeDstChain && !hasPreferredDestinationWalletAddress ? <p className="col-span-full text-xs text-amber-200/80">{destinationRecipientCopy}</p> : null}
                 </div>
           </section>
 
@@ -5901,12 +5872,18 @@ export function BridgeApp() {
                 ) : null}
               </div>
 
+              {!isCustomOftSource && filteredQuoteCount > 0 ? (
+                <p role="status" className="mt-2 text-xs text-[var(--muted)]">
+                  {filteredQuoteCount} quote(s) hidden: above {maxSlippageBps! / 100}% slippage or minimum receive unavailable.
+                </p>
+              ) : null}
+
               {!isCustomOftSource && quoteReady && quote && selectedSrcToken && selectedDstToken ? (
                 <div className="mt-4 flex min-h-0 flex-1 flex-col">
                   <div className="min-h-0 flex-1 space-y-2 overflow-auto pr-1">
                     {quotes.map((candidate, index) => {
                       const routeKey = getQuoteRouteKey(candidate);
-                      const isSelected = routeKey === selectedQuoteRouteKey;
+                      const isSelected = routeKey === getQuoteRouteKey(quote);
                       const isBest = routeKey === bestQuoteRouteKey;
 
                       return (
@@ -5939,7 +5916,7 @@ export function BridgeApp() {
                             <div className="flex shrink-0 gap-2">
                               {isBest ? (
                                 <span
-                                  className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] ${
+                                  className={`inline-flex rounded-full border px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-[0.2em] ${
                                     isSelected
                                       ? "border-black/10 bg-black/10 text-black/72"
                                       : "border-white/12 bg-white/[0.05] text-white/76"
@@ -5949,18 +5926,21 @@ export function BridgeApp() {
                                 </span>
                               ) : null}
                               {isSelected ? (
-                                <span className="inline-flex rounded-full border border-black/10 bg-black/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-black/72">
+                                <span className="inline-flex rounded-full border border-black/10 bg-black/10 px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-[0.2em] text-black/72">
                                   Selected
                                 </span>
                               ) : null}
                             </div>
                           </div>
 
+                          <p className={`mt-2 text-xs ${isSelected ? "text-black/66" : "text-[var(--muted)]"}`}>
+                            Slippage {formatQuoteSlippage(candidate)}
+                          </p>
                           <div className="mt-3 flex items-end justify-between gap-3">
                             <div>
                               <div className={`flex items-center gap-1 ${isSelected ? "text-black/66" : "text-[var(--muted)]"}`}>
                                 <ArrowDownIcon className="h-2.5 w-2.5" />
-                                <p className="text-[10px] font-semibold uppercase tracking-[0.2em]">
+                                <p className="text-[0.625rem] font-semibold uppercase tracking-[0.2em]">
                                   Receive
                                 </p>
                               </div>
@@ -5975,7 +5955,7 @@ export function BridgeApp() {
                               </p>
                             </div>
                             <span
-                              className={`inline-flex h-6 w-6 items-center justify-center rounded-full border text-[10px] font-semibold ${
+                              className={`inline-flex h-6 w-6 items-center justify-center rounded-full border text-[0.625rem] font-semibold ${
                                 isSelected
                                   ? "border-black/12 bg-black/10 text-black/72"
                                   : "border-white/10 bg-black/40 text-white/50"
@@ -5995,7 +5975,7 @@ export function BridgeApp() {
                     <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
                       <div className="flex items-center gap-1.5 text-[var(--muted)]">
                         <SettingsIcon className="h-3 w-3 shrink-0" />
-                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Config</p>
+                        <p className="text-[0.5625rem] font-semibold uppercase tracking-[0.24em]">Config</p>
                       </div>
                       <p className="mt-1.5 text-sm font-medium text-white">
                         {selectedCustomOftConfig.name}
@@ -6008,7 +5988,7 @@ export function BridgeApp() {
                     <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
                       <div className="flex items-center gap-1.5 text-[var(--muted)]">
                         <ArrowRightIcon className="h-3 w-3 shrink-0" />
-                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Route</p>
+                        <p className="text-[0.5625rem] font-semibold uppercase tracking-[0.24em]">Route</p>
                       </div>
                       <p className="mt-1.5 flex items-center gap-1.5 text-sm text-white">
                         <span>{customOftSrcChain ? (
@@ -6027,31 +6007,31 @@ export function BridgeApp() {
                     <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
                       <div className="flex items-center gap-1.5 text-[var(--muted)]">
                         <LinkIcon className="h-3 w-3 shrink-0" />
-                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Src OFT</p>
+                        <p className="text-[0.5625rem] font-semibold uppercase tracking-[0.24em]">Src OFT</p>
                         {selectedCustomOftSourceDeployment?.approvalRequired ? (
-                          <span className="ml-auto rounded-full border border-white/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.2em] text-white/50">Approval</span>
+                          <span className="ml-auto rounded-full border border-white/10 px-1.5 py-0.5 text-[0.5rem] font-semibold uppercase tracking-[0.2em] text-white/50">Approval</span>
                         ) : null}
                       </div>
-                      <p className="mt-1.5 break-all font-mono text-[11px] leading-5 text-white/84">
+                      <p className="mt-1.5 break-all font-mono text-[0.6875rem] leading-5 text-white/84">
                         {selectedCustomOftSourceDeployment?.oftAddress ?? <span className="font-sans text-xs text-[var(--muted)]">Select a source chain</span>}
                       </p>
                       {selectedCustomOftSourceDeployment ? (
-                        <p className="mt-0.5 text-[10px] text-[var(--muted)]">{selectedCustomOftSourceDeployment.decimals} decimals</p>
+                        <p className="mt-0.5 text-[0.625rem] text-[var(--muted)]">{selectedCustomOftSourceDeployment.decimals} decimals</p>
                       ) : null}
                     </div>
                     <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
                       <div className="flex items-center gap-1.5 text-[var(--muted)]">
                         <LinkIcon className="h-3 w-3 shrink-0" />
-                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Dst OFT</p>
+                        <p className="text-[0.5625rem] font-semibold uppercase tracking-[0.24em]">Dst OFT</p>
                       </div>
-                      <p className="mt-1.5 break-all font-mono text-[11px] leading-5 text-white/84">
+                      <p className="mt-1.5 break-all font-mono text-[0.6875rem] leading-5 text-white/84">
                         {selectedCustomOftDestinationDeployment?.oftAddress ?? <span className="font-sans text-xs text-[var(--muted)]">Select a destination chain</span>}
                       </p>
                     </div>
                     <div className="rounded-[1.15rem] border border-white/10 bg-black/70 px-3 py-2.5">
                       <div className="flex items-center gap-1.5 text-[var(--muted)]">
                         <ArrowDownIcon className="h-3 w-3 shrink-0" />
-                        <p className="text-[9px] font-semibold uppercase tracking-[0.24em]">Receive</p>
+                        <p className="text-[0.5625rem] font-semibold uppercase tracking-[0.24em]">Receive</p>
                       </div>
                       <p className="mt-1.5 text-sm font-medium text-white">
                         {customOftDestinationPreviewAmount}
@@ -6068,7 +6048,7 @@ export function BridgeApp() {
                 )
               ) : (
                 <div className="mt-4 rounded-[1.25rem] border border-dashed border-white/12 bg-black/40 px-4 py-3 text-sm text-[var(--muted)]">
-                  {isQuoting ? "Requesting live quote..." : "Fill the route to start live quotes."}
+                  {isQuoting ? "Requesting live quote..." : filteredQuoteCount > 0 ? "No quotes match your slippage limit. Adjust it in Settings." : "Fill the route to start live quotes."}
                 </div>
               )}
             </section>
@@ -6085,12 +6065,12 @@ export function BridgeApp() {
                     <article key={item.id} className="min-w-0 rounded-xl border border-white/10 bg-black/50 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="min-w-0 text-xs font-medium text-white">{item.srcChainName} → {item.dstChainName}</p>
-                        <span className={`rounded-full px-2 py-1 text-[10px] ${item.phase === "error" ? "bg-red-400/10 text-red-300" : item.phase === "success" ? "bg-emerald-400/10 text-emerald-200" : "bg-white/10 text-white/70"}`}>
+                        <span className={`rounded-full px-2 py-1 text-[0.625rem] ${item.phase === "error" ? "bg-red-400/10 text-red-300" : item.phase === "success" ? "bg-emerald-400/10 text-emerald-200" : "bg-white/10 text-white/70"}`}>
                           {getExecutionHistoryStatus(item)}
                         </span>
                       </div>
                       <p className="mt-2 break-words text-sm font-medium">{item.srcAmount} <span className="font-normal text-white/40">→</span> {item.expectedDstAmount}</p>
-                      <p className="mt-1 flex items-center gap-1.5 text-[11px] text-[var(--muted)]">
+                      <p className="mt-1 flex items-center gap-1.5 text-[0.6875rem] text-[var(--muted)]">
                         <ProtocolIcon provider={item.cctp || item.cctpNative || item.routeLabel.includes("CCTP") ? "cctp" : item.ccipSubmission || item.routeLabel.includes("CCIP") ? "ccip" : undefined} />
                         <span>{formatTimeLabel(item.createdAt)} · {formatHistoryRouteLabel(item.routeLabel)}</span>
                       </p>
@@ -6196,7 +6176,7 @@ export function BridgeApp() {
         />
       ) : null}
       {isRpcSettingsOpen ? (
-        <RpcSettingsModal onClose={() => setIsRpcSettingsOpen(false)} />
+        <RpcSettingsModal onClose={() => setIsRpcSettingsOpen(false)} quoteSettings={quoteSettings} onApplyQuoteSettings={applyQuoteSettings} executionRunning={executionState.phase === "running"} />
       ) : null}
       {isLayerZeroApiKeyModalOpen ? (
         <LayerZeroApiKeyModal
@@ -6252,7 +6232,7 @@ export function BridgeApp() {
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span
-                    className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] ${
+                    className={`inline-flex rounded-full border px-2.5 py-1 text-[0.625rem] font-semibold uppercase tracking-[0.2em] ${
                       notification.tone === "success"
                         ? "border-black/10 bg-black/10 text-black/72"
                         : notification.tone === "danger"
@@ -6263,7 +6243,7 @@ export function BridgeApp() {
                     {notification.title}
                   </span>
                   <span
-                    className={`text-[10px] font-semibold uppercase tracking-[0.2em] ${
+                    className={`text-[0.625rem] font-semibold uppercase tracking-[0.2em] ${
                       notification.tone === "success" ? "text-black/60" : "text-[var(--muted)]"
                     }`}
                   >

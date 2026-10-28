@@ -43,6 +43,7 @@ export type DirectOftReader = <T>(args: {
   abi: Abi;
   functionName: string;
   args?: readonly unknown[];
+  account?: Address;
 }) => Promise<T>;
 
 // Require the issuer's receive gas configuration; guessing a gas limit can strand a transfer.
@@ -76,6 +77,7 @@ import { quoteLegacyNativeOft, isNativeErc20Precompile } from "./direct-oft-nati
 import { createTonSourceAdapter, type TonSendRequest, type TonSendQuote } from "./direct-oft-ton-source";
 import { verifyOrderlyEvm, orderlyAmount } from "./direct-oft-orderly";
 import { createNonEvmReceiveAdapter, fetchNonEvmReceiveState, DIRECT_OFT_RECEIVE_TYPES, type ReceiveStateRequest, type ReceiveState } from "./direct-oft-receive";
+import { findStargateRoute } from "./stargate-deployments";
 
 export function supportsDirectOftRoute(source: string, destination: string) {
   return source === "EVM"
@@ -297,6 +299,10 @@ async function discoverPeerMetadata(args: DirectOftQuoteArgs, hints: Address[] =
 export async function buildDirectOftQuote(
   args: DirectOftQuoteArgs,
 ): Promise<BridgeQuote> {
+  if (findStargateRoute(args.srcChain, args.dstChain, args.srcToken, args.dstToken)) {
+    const { buildDirectStargateQuote } = await import("./direct-stargate");
+    return buildDirectStargateQuote(args);
+  }
   // Discovery and construction validate the same destination. Reuse reads only
   // inside this quote, including recursive mesh selection; execution starts fresh.
   const receiveReads = new Map<string, Promise<ReceiveState>>();

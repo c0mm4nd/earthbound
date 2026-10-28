@@ -23,6 +23,10 @@
 # misc
 .DS_Store
 *.pem
+*.key
+*.p12
+*.pfx
+*.log
 
 # debug
 npm-debug.log*
@@ -42,6 +46,7 @@ next-env.d.ts
 
 .agents/
 .claude/
+.agent-browser/
 
 # Local internal documentation and audit records
 /AGENTS.md
