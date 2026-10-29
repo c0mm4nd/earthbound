@@ -14,7 +14,9 @@
     "test:ccip:solana": "node scripts/test-ccip-solana.mjs",
     "test:ccip:aptos": "node scripts/test-ccip-aptos.mjs",
     "test:ccip:canton": "node scripts/test-ccip-canton.mjs",
-    "test:ccip:native": "node --test scripts/test-ccip-native.mjs scripts/test-ccip-wrapped-native.mjs"
+    "test:ccip:native": "node --test scripts/test-ccip-native.mjs scripts/test-ccip-wrapped-native.mjs",
+    "postinstall": "patch-package --error-on-fail",
+    "test:security": "node --test scripts/test-dependency-security.mjs"
   },
   "dependencies": {
     "@aptos-labs/ts-sdk": "7.5.0",
@@ -41,7 +43,8 @@
     "@walletconnect/sign-client": "2.23.8",
     "@walletconnect/types": "2.23.8",
     "buffer": "6.0.3",
-    "next": "16.3.5",
+    "next": "16.4.3",
+    "patch-package": "8.0.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "tiny-invariant": "^1.3.3",
@@ -55,12 +58,20 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.3.5",
+    "eslint-config-next": "16.4.3",
     "tailwindcss": "^4",
     "typescript": "^5"
   },
   "overrides": {
     "@solana/web3.js": "$@solana/web3.js",
-    "@ton/core": "$@ton/core"
+    "@ton/core": "$@ton/core",
+    "bigint-buffer": "npm:@exodus/bigint-buffer@1.1.5-exodus.1",
+    "jayson": "5.0.0",
+    "toml": "5.0.1",
+    "uuid@<11.1.1": "11.1.1",
+    "zod": "4.6.7",
+    "axios@<1.20.0": "1.20.0",
+    "lodash": "4.18.1",
+    "ws@>=8.0.0 <8.21.0": "8.21.0"
   }
 }

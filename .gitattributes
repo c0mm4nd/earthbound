@@ -1,0 +1,2 @@
+# Unified patches contain literal context prefixes and upstream whitespace.
+patches/*.patch -whitespace

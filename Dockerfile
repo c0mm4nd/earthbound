@@ -1,6 +1,7 @@
 FROM node:24-bookworm-slim AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
+COPY patches ./patches
 RUN npm ci
 
 FROM node:24-bookworm-slim AS builder
@@ -8,7 +9,7 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+RUN npm run test:security && npm run build
 
 FROM node:24-bookworm-slim AS runner
 WORKDIR /app

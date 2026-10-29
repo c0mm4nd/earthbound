@@ -1,0 +1,45 @@
+diff --git a/node_modules/deepmerge/dist/cjs.js b/node_modules/deepmerge/dist/cjs.js
+index 7c36cbd..faa972c 100644
+--- a/node_modules/deepmerge/dist/cjs.js
++++ b/node_modules/deepmerge/dist/cjs.js
+@@ -58,7 +58,9 @@ function getEnumerableOwnPropertySymbols(target) {
+ }
+ 
+ function getKeys(target) {
+-	return Object.keys(target).concat(getEnumerableOwnPropertySymbols(target))
++	return Object.keys(target).concat(getEnumerableOwnPropertySymbols(target)).filter(function(key) {
++		return key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
++	})
+ }
+ 
+ function propertyIsOnObject(object, property) {
+diff --git a/node_modules/deepmerge/dist/umd.js b/node_modules/deepmerge/dist/umd.js
+index 4071e7c..b0c68a5 100644
+--- a/node_modules/deepmerge/dist/umd.js
++++ b/node_modules/deepmerge/dist/umd.js
+@@ -62,7 +62,9 @@
+ 	}
+ 
+ 	function getKeys(target) {
+-		return Object.keys(target).concat(getEnumerableOwnPropertySymbols(target))
++		return Object.keys(target).concat(getEnumerableOwnPropertySymbols(target)).filter(function(key) {
++		return key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
++	})
+ 	}
+ 
+ 	function propertyIsOnObject(object, property) {
+diff --git a/node_modules/deepmerge/index.js b/node_modules/deepmerge/index.js
+index 77968ae..df0f4e0 100644
+--- a/node_modules/deepmerge/index.js
++++ b/node_modules/deepmerge/index.js
+@@ -33,7 +33,9 @@ function getEnumerableOwnPropertySymbols(target) {
+ }
+ 
+ function getKeys(target) {
+-	return Object.keys(target).concat(getEnumerableOwnPropertySymbols(target))
++	return Object.keys(target).concat(getEnumerableOwnPropertySymbols(target)).filter(function(key) {
++		return key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
++	})
+ }
+ 
+ function propertyIsOnObject(object, property) {
